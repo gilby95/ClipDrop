@@ -1,0 +1,10 @@
+.venv/
+build/
+dist/
+*.spec
+__pycache__/
+bin/
+*.zip
+release/
+share_channels.json
+ClipDrop-Setup.exe
