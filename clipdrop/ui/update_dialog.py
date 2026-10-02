@@ -1,10 +1,12 @@
+import html
 import threading
 
-from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QLabel, QMessageBox, QProgressBar,
-                               QVBoxLayout)
+from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtWidgets import (QApplication, QDialog, QHBoxLayout, QLabel, QMessageBox, QProgressBar, QVBoxLayout)
 
 from .. import __version__, update
+from . import theme
+from .dialogs import Shell, button
 
 
 class UpdateChecker(QObject):
@@ -36,22 +38,36 @@ class UpdateDialog(QDialog):
         super().__init__(parent)
         self.info, self.busy = info, busy
         self.setWindowTitle("Update ClipDrop")
-        self.setMinimumWidth(460)
-        lay = QVBoxLayout(self)
-        lay.setSpacing(10)
-        t = QLabel(f"ClipDrop {info['version']} is out")
-        t.setObjectName("Big")
-        lay.addWidget(t)
-        sub = QLabel(f"You have {__version__}. Updating takes about a minute; your clips, folders and "
-                     "settings stay as they are.")
-        sub.setObjectName("Muted")
-        sub.setWordWrap(True)
-        lay.addWidget(sub)
+        s = Shell(self, f"ClipDrop {info['version']} is out",
+                  f"You have {__version__}. Updating takes about a minute; your clips, folders and "
+                  "settings stay as they are.")
+        head = s.title.parentWidget().layout()
+        head.removeWidget(s.title)
+        head.removeWidget(s.subtitle)
+        col = QVBoxLayout()
+        col.setSpacing(6)
+        col.addWidget(s.title)
+        col.addWidget(s.subtitle)
+        top = QHBoxLayout()
+        top.setSpacing(16)
+        logo = QLabel()
+        logo.setPixmap(theme.logo_label_pixmap(48))
+        top.addWidget(logo, 0, Qt.AlignTop)
+        top.addLayout(col, 1)
+        head.addLayout(top)
+        lay = s.body
         if info["notes"]:
-            notes = QLabel(info["notes"])
+            notes = QLabel(f"<span style='color:{theme.FAINT}; font-size:11px; font-weight:600'>WHAT'S NEW</span>"
+                           "<br>" + html.escape(info["notes"]).replace("\n", "<br>"))
             notes.setWordWrap(True)
-            notes.setStyleSheet("background:#222328; border-radius:6px; padding:8px;")
+            notes.setTextFormat(Qt.RichText)
+            notes.setStyleSheet(f"background:{theme.LIST}; border:1px solid {theme.BORDER}; border-radius:10px; "
+                                f"padding:12px 14px; color:{theme.TEXT_2};")
             lay.addWidget(notes)
+        self.progress_label = QLabel("")
+        self.progress_label.setObjectName("Muted")
+        self.progress_label.hide()
+        lay.addWidget(self.progress_label)
         self.progress = QProgressBar()
         self.progress.setRange(0, 1000)
         self.progress.hide()
@@ -59,13 +75,15 @@ class UpdateDialog(QDialog):
         self.status = QLabel("")
         self.status.setWordWrap(True)
         lay.addWidget(self.status)
-        bb = QDialogButtonBox()
-        self.go = bb.addButton("Update now", QDialogButtonBox.AcceptRole)
-        self.go.setObjectName("Primary")
-        later = bb.addButton("Later", QDialogButtonBox.RejectRole)
+        lay.addStretch()
+        s.footer.addStretch()
+        self.later = button("Later")
+        self.go = button("Update now", "Primary", "update", theme.ON_ACCENT)
+        self.go.setDefault(True)
         self.go.clicked.connect(self._start)
-        later.clicked.connect(self.reject)
-        lay.addWidget(bb)
+        self.later.clicked.connect(self.reject)
+        s.footer.addWidget(self.later)
+        s.footer.addWidget(self.go)
         self._cancel = threading.Event()
         self.bridge = _Bridge()
         self.bridge.progress.connect(lambda f: self.progress.setValue(int(f * 1000)))
@@ -77,9 +95,13 @@ class UpdateDialog(QDialog):
                 self, "Still compressing", "A clip is still compressing and will be stopped. Update anyway?"
         ) != QMessageBox.Yes:
             return
-        self.go.setEnabled(False)
+        self.go.hide()
+        self.later.setText("Cancel")
         self.progress.show()
-        self.status.setText("Downloading…")
+        self.progress_label.setText("Downloading…")
+        self.progress_label.show()
+        self.status.setText("")
+        self.status.setStyleSheet("")
         info, bridge, cancel = self.info, self.bridge, self._cancel
 
         def job():
@@ -93,7 +115,11 @@ class UpdateDialog(QDialog):
         threading.Thread(target=job, daemon=True).start()
 
     def _install(self, path):
-        self.status.setText("Installing… ClipDrop will reopen by itself.")
+        self.progress.hide()
+        self.progress_label.hide()
+        self.later.hide()
+        self.status.setText(f"<b>Installing…</b> <span style='color:{theme.MUTED}'>ClipDrop will reopen by itself.</span>")
+        self.repaint()
         try:
             update.run_installer(path)
         except OSError as e:
@@ -105,10 +131,16 @@ class UpdateDialog(QDialog):
         QApplication.instance().quit()
 
     def _failed(self, msg):
-        self.go.setEnabled(True)
+        self.go.show()
+        self.go.setText("Try again")
+        self.later.show()
+        self.later.setText("Later")
         self.progress.hide()
-        self.status.setText(f"Update failed: {msg}")
-        self.status.setStyleSheet("color:#ed4245;")
+        self.progress_label.hide()
+        self.status.setText(f"Couldn't update: {msg}")
+        self.status.setObjectName("Banner")
+        self.status.setProperty("kind", "bad")
+        theme.repolish(self.status)
 
     def reject(self):
         self._cancel.set()

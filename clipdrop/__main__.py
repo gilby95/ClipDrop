@@ -12,12 +12,15 @@ def main():
     from PySide6.QtWidgets import QApplication
 
     from .ui.main_window import MainWindow
-    from .ui.theme import QSS, app_icon
+    from .ui import theme
 
     app = QApplication(sys.argv)
     app.setApplicationName("ClipDrop")
     app.setStyle("Fusion")
-    app.setStyleSheet(QSS)
+    theme.init_fonts()
+    app.setFont(theme.ui(13))
+    app.setStyleSheet(theme.qss())
+    app_icon = theme.app_icon
     app.setWindowIcon(app_icon())
     w = MainWindow()
     w.show()

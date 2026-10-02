@@ -1,13 +1,16 @@
 """Trim timeline: drag the two handles to pick the part to keep, click to seek,
 mouse wheel to zoom in on long recordings."""
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
+from ..media import fmt_time
 from . import theme
 
 MIN_SEL_MS = 500
-HANDLE_W = 10
+HANDLE_W = 14
+TOP = 24            # room above the track for the time bubble / zoom map
+TRACK_H = 56
 STEPS_S = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
 
 
@@ -25,7 +28,7 @@ class Timeline(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(72)
+        self.setFixedHeight(TOP + TRACK_H + 30)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.NoFocus)
         self.dur = 0
@@ -35,7 +38,8 @@ class Timeline(QWidget):
         self.v0 = 0
         self.v1 = 1
         self._drag = None
-        self.setToolTip("Drag the blue handles to trim. Click to jump. Scroll to zoom.")
+        self._hover = None
+        self.setToolTip("Drag the handles to trim. Click to jump. Scroll to zoom.")
 
     # API ----------------------------------------------------------------------
 
@@ -59,7 +63,7 @@ class Timeline(QWidget):
     # Geometry -----------------------------------------------------------------
 
     def _track(self):
-        return QRectF(HANDLE_W + 2, 6, self.width() - 2 * HANDLE_W - 4, 38)
+        return QRectF(HANDLE_W + 2, TOP, self.width() - 2 * HANDLE_W - 4, TRACK_H)
 
     def _x(self, ms):
         t = self._track()
@@ -78,55 +82,99 @@ class Timeline(QWidget):
             return "a" if da < db else "b"
         return None
 
+    def zoomed(self):
+        return self.v1 - self.v0 < self.dur
+
     # Painting -----------------------------------------------------------------
+
+    def _bubble(self, p, cx, text, lime):
+        f = theme.mono(11.5, QFont.DemiBold)
+        p.setFont(f)
+        w = QFontMetrics(f).horizontalAdvance(text) + 18
+        r = QRectF(cx - w / 2, 0, w, 20)
+        r.moveLeft(max(0, min(self.width() - w, r.left())))
+        p.setPen(QPen(QColor(theme.ACCENT if lime else theme.BORDER_HI), 1))
+        p.setBrush(QColor(theme.ACCENT if lime else theme.SURFACE_HI))
+        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
+        p.setPen(QColor(theme.ON_ACCENT if lime else theme.TEXT))
+        p.drawText(r, Qt.AlignCenter, text)
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         t = self._track()
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(theme.SURFACE))
-        p.drawRoundedRect(t, 6, 6)
+        p.setPen(QPen(QColor(theme.BORDER), 1))
+        p.setBrush(QColor("#1a1d21"))
+        p.drawRoundedRect(t.adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
         if self.dur <= 1:
             return
 
-        xa, xb = max(t.left(), self._x(self.a)), min(t.right(), self._x(self.b))
-        if xb > xa:
-            sel = QRectF(xa, t.top(), xb - xa, t.height())
-            c = QColor(theme.ACCENT)
-            c.setAlpha(70)
-            p.setBrush(c)
-            p.drawRect(sel)
-            p.setPen(QPen(QColor(theme.ACCENT), 2))
-            p.drawLine(QPointF(xa, t.top() + 1), QPointF(xb, t.top() + 1))
-            p.drawLine(QPointF(xa, t.bottom() - 1), QPointF(xb, t.bottom() - 1))
+        # zoom map: where the visible window sits in the whole clip
+        if self.zoomed():
+            m = QRectF(t.left(), 8, t.width(), 6)
             p.setPen(Qt.NoPen)
+            p.setBrush(QColor(theme.SURFACE))
+            p.drawRoundedRect(m, 3, 3)
+            sa, sb = m.left() + self.a / self.dur * m.width(), m.left() + self.b / self.dur * m.width()
+            p.setBrush(QColor(theme.ACCENT_LINE))
+            p.drawRoundedRect(QRectF(sa, m.top(), max(2, sb - sa), m.height()), 3, 3)
+            va, vb = m.left() + self.v0 / self.dur * m.width(), m.left() + self.v1 / self.dur * m.width()
+            p.setPen(QPen(QColor(theme.TEXT), 1.5))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(QRectF(va, m.top() - 2, max(4, vb - va), m.height() + 4), 4, 4)
 
-        for which, x in (("a", self._x(self.a)), ("b", self._x(self.b))):
-            if t.left() - HANDLE_W <= x <= t.right() + HANDLE_W:
-                r = QRectF(x - HANDLE_W if which == "a" else x, t.top() - 3, HANDLE_W, t.height() + 6)
-                p.setBrush(QColor(theme.ACCENT_HI if self._drag == which else theme.ACCENT))
-                p.drawRoundedRect(r, 3, 3)
-                p.setPen(QPen(QColor(255, 255, 255, 200), 1.2))
-                cx = r.center().x()
-                for dx in (-1.5, 1.5):
-                    p.drawLine(QPointF(cx + dx, r.center().y() - 6), QPointF(cx + dx, r.center().y() + 6))
+        xa, xb = self._x(self.a), self._x(self.b)
+        clip = QPainterPath()
+        clip.addRoundedRect(t, 8, 8)
+        p.save()
+        p.setClipPath(clip)
+        p.setPen(Qt.NoPen)
+        dim = QColor(8, 9, 11, 158)
+        if xa > t.left():
+            p.fillRect(QRectF(t.left(), t.top(), xa - t.left(), t.height()), dim)
+        if xb < t.right():
+            p.fillRect(QRectF(xb, t.top(), t.right() - xb, t.height()), dim)
+        sa, sb = max(t.left(), xa), min(t.right(), xb)
+        if sb > sa:
+            fill = QColor(theme.ACCENT)
+            fill.setAlpha(34 if self._drag in ("a", "b") else 20)
+            p.fillRect(QRectF(sa, t.top(), sb - sa, t.height()), fill)
+        p.restore()
+        if sb > sa:
+            p.setPen(QPen(QColor(theme.ACCENT), 2))
+            p.drawLine(QPointF(sa, t.top() + 1), QPointF(sb, t.top() + 1))
+            p.drawLine(QPointF(sa, t.bottom() - 1), QPointF(sb, t.bottom() - 1))
+
+        for which, x in (("a", xa), ("b", xb)):
+            if not (t.left() - HANDLE_W <= x <= t.right() + HANDLE_W):
+                continue
+            active = self._drag == which
+            hot = active or self._hover == which
+            hw = HANDLE_W + (2 if hot else 0)
+            r = QRectF(x - hw if which == "a" else x, t.top() - 5, hw, t.height() + 10)
+            if active:
+                ring = QColor(theme.ACCENT)
+                ring.setAlpha(72)
+                p.setPen(QPen(ring, 3))
+            else:
                 p.setPen(Qt.NoPen)
+            p.setBrush(QColor(theme.ACCENT_HI if hot else theme.ACCENT))
+            p.drawRoundedRect(r, 5, 5)
+            p.setPen(QPen(QColor(theme.ON_ACCENT), 1.5))
+            cx = r.center().x()
+            for dx in (-2, 2):
+                p.drawLine(QPointF(cx + dx, r.center().y() - 8), QPointF(cx + dx, r.center().y() + 8))
 
         # ticks
         span_s = (self.v1 - self.v0) / 1000
         step = next((s for s in STEPS_S if t.width() / max(span_s / s, 1e-6) >= 80), STEPS_S[-1])
-        f = QFont(self.font())
-        f.setPointSizeF(8)
-        p.setFont(f)
+        p.setFont(theme.mono(11, QFont.Normal))
         first = int(self.v0 / 1000 // step) * step
         s = first
         while s * 1000 <= self.v1:
             x = self._x(s * 1000)
             if x >= t.left() - 1:
-                p.setPen(QPen(QColor(theme.BORDER), 1))
-                p.drawLine(QPointF(x, t.bottom() + 3), QPointF(x, t.bottom() + 8))
-                p.setPen(QColor(theme.MUTED))
+                p.setPen(QColor(theme.FAINT))
                 p.drawText(QRectF(x - 40, t.bottom() + 8, 80, 16), Qt.AlignHCenter | Qt.AlignTop,
                            _label(s * 1000, step))
             s += step
@@ -135,20 +183,32 @@ class Timeline(QWidget):
         if self.v0 <= self.pos <= self.v1:
             x = self._x(self.pos)
             p.setPen(QPen(QColor("white"), 2))
-            p.drawLine(QPointF(x, t.top() - 4), QPointF(x, t.bottom() + 2))
-            knob = QPainterPath()
-            knob.moveTo(x - 6, t.top() - 6)
-            knob.lineTo(x + 6, t.top() - 6)
-            knob.lineTo(x, t.top() + 2)
-            knob.closeSubpath()
-            p.setPen(Qt.NoPen)
+            p.drawLine(QPointF(x, t.top() - 6), QPointF(x, t.bottom() + 4))
+            p.setPen(QPen(QColor(theme.BG), 2))
             p.setBrush(QColor("white"))
-            p.drawPath(knob)
+            p.drawEllipse(QPointF(x, t.top() - 6), 6, 6)
 
-        if self.v1 - self.v0 < self.dur:
-            p.setPen(QColor(theme.MUTED))
-            p.drawText(QRectF(t.right() - 160, t.bottom() + 8, 160, 16), Qt.AlignRight,
-                       "zoomed · double-click to reset")
+        if self.zoomed():
+            f = theme.ui(11.5)
+            p.setFont(f)
+            text = "Zoomed · double-click to reset"
+            w = QFontMetrics(f).horizontalAdvance(text) + 20
+            r = QRectF(t.right() - w, t.bottom() + 6, w, 20)
+            p.setPen(QPen(QColor(theme.BORDER), 1))
+            p.setBrush(QColor(theme.SURFACE))
+            p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
+            p.setPen(QColor(theme.TEXT_2))
+            p.drawText(r, Qt.AlignCenter, text)
+
+        # time bubble over the handle you're touching
+        which = self._drag if self._drag in ("a", "b") else self._hover
+        if which:
+            ms = self.a if which == "a" else self.b
+            if self._drag:
+                text = f"{fmt_time(ms / 1000)} · {fmt_time((self.b - self.a) / 1000)} clip"
+            else:
+                text = f"{'Start' if which == 'a' else 'End'} {fmt_time(ms / 1000)}"
+            self._bubble(p, xa - HANDLE_W / 2 if which == "a" else xb + HANDLE_W / 2, text, bool(self._drag))
 
     # Mouse --------------------------------------------------------------------
 
@@ -165,7 +225,11 @@ class Timeline(QWidget):
     def mouseMoveEvent(self, e):
         x = e.position().x()
         if self._drag is None:
-            self.setCursor(Qt.SizeHorCursor if self._hit(x) else Qt.PointingHandCursor)
+            hit = self._hit(x) if self.dur > 1 else None
+            if hit != self._hover:
+                self._hover = hit
+                self.update()
+            self.setCursor(Qt.SizeHorCursor if hit else Qt.PointingHandCursor)
             return
         ms = self._ms(x)
         if self._drag == "a":
@@ -184,6 +248,11 @@ class Timeline(QWidget):
     def mouseReleaseEvent(self, _):
         self._drag = None
         self.update()
+
+    def leaveEvent(self, _):
+        if self._hover:
+            self._hover = None
+            self.update()
 
     def mouseDoubleClickEvent(self, _):
         self.v0, self.v1 = 0, self.dur

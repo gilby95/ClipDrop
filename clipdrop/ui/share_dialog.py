@@ -3,11 +3,14 @@ import os
 import threading
 
 from PySide6.QtCore import QObject, QSize, Qt, Signal
-from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-                               QMessageBox, QProgressBar, QPushButton, QVBoxLayout)
+from PySide6.QtGui import QIcon
+from PySide6.QtWidgets import (QComboBox, QDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox,
+                               QProgressBar, QPushButton, QVBoxLayout)
 
 from .. import share
 from ..media import fmt_size
+from . import theme
+from .dialogs import Shell, button, label
 
 
 def default_name():
@@ -44,72 +47,86 @@ class ShareDialog(QDialog):
         super().__init__(parent)
         self.settings, self.src, self.path = settings, src, path
         self.setWindowTitle("Share to Discord")
-        self.setMinimumWidth(480)
         self._cancel = None
         self._sent = False
 
-        lay = QVBoxLayout(self)
-        lay.setSpacing(10)
-        top = QHBoxLayout()
+        s = Shell(self, "Share to Discord", f"{os.path.basename(path)}  ·  {fmt_size(size)}", divider=True)
         thumb = QLabel()
-        thumb.setFixedSize(112, 63)
+        thumb.setFixedSize(96, 54)
         thumb.setStyleSheet("background:#0b0b0d; border-radius:6px;")
         if pixmap:
-            thumb.setPixmap(pixmap.scaled(QSize(112, 63), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-                            .copy(0, 0, 112, 63))
+            thumb.setPixmap(pixmap.scaled(QSize(96, 54), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                            .copy(0, 0, 96, 54))
+        head = s.title.parentWidget().layout()
+        title_box = QVBoxLayout()
+        title_box.setSpacing(4)
+        head.removeWidget(s.title)
+        head.removeWidget(s.subtitle)
+        title_box.addWidget(s.title)
+        title_box.addWidget(s.subtitle)
+        top = QHBoxLayout()
+        top.setSpacing(14)
         top.addWidget(thumb)
-        col = QVBoxLayout()
-        t = QLabel("Share to Discord")
-        t.setObjectName("Big")
-        f = QLabel(f"{os.path.basename(path)}  ·  {fmt_size(size)}")
-        f.setObjectName("Muted")
-        col.addWidget(t)
-        col.addWidget(f)
-        top.addLayout(col, 1)
-        lay.addLayout(top)
+        top.addLayout(title_box, 1)
+        head.addLayout(top)
+        lay = s.body
+        lay.setSpacing(6)
 
-        lay.addWidget(QLabel("Channel"))
+        lay.addWidget(label("Channel", "Muted"))
         self.channel = QComboBox()
+        self.channel.setMinimumHeight(38)
         for ch in settings.channels():
-            self.channel.addItem(f"#{ch['name']}", ch)
+            self.channel.addItem(f"#  {ch['name']}", ch)
         last = settings["last_channel"]
         for i in range(self.channel.count()):
             if self.channel.itemData(i)["name"] == last:
                 self.channel.setCurrentIndex(i)
         lay.addWidget(self.channel)
 
-        lay.addWidget(QLabel("Message (optional)"))
+        lay.addSpacing(8)
+        lay.addWidget(label("Message <span style='color:#80868f'>(optional)</span>", "Muted"))
         self.message = QLineEdit()
         self.message.setPlaceholderText("bro look at this")
         self.message.setMaxLength(1800)
+        self.message.setMinimumHeight(38)
         lay.addWidget(self.message)
 
         row = QHBoxLayout()
-        self.as_label = QLabel()
-        self.as_label.setObjectName("Muted")
-        row.addWidget(self.as_label, 1)
+        row.setSpacing(6)
+        self.as_label = label("", "Muted")
+        row.addWidget(self.as_label)
         change = QPushButton("Change name")
-        change.setObjectName("Flat")
+        change.setObjectName("Link")
+        change.setCursor(Qt.PointingHandCursor)
         change.clicked.connect(self._change_name)
         row.addWidget(change)
+        row.addStretch()
+        lay.addSpacing(4)
         lay.addLayout(row)
         self._sync_name()
 
+        self.progress_label = label("", "Muted")
+        self.progress_label.hide()
+        lay.addSpacing(6)
+        lay.addWidget(self.progress_label)
         self.progress = QProgressBar()
+        self.progress.setProperty("thin", True)
         self.progress.setRange(0, 1000)
         self.progress.hide()
         lay.addWidget(self.progress)
-        self.status = QLabel("")
-        self.status.setWordWrap(True)
+        self.status = label("", "Banner", wrap=True)
+        self.status.hide()
         lay.addWidget(self.status)
 
-        self.buttons = QDialogButtonBox()
-        self.send_btn = self.buttons.addButton("Send", QDialogButtonBox.AcceptRole)
-        self.send_btn.setObjectName("Primary")
-        self.close_btn = self.buttons.addButton("Cancel", QDialogButtonBox.RejectRole)
+        s.footer.addStretch()
+        self.close_btn = button("Cancel")
+        self.send_btn = button("Send", "Primary", "share", theme.ON_ACCENT)
+        self.send_btn.setMinimumWidth(110)
+        self.send_btn.setDefault(True)
         self.send_btn.clicked.connect(self._send)
         self.close_btn.clicked.connect(self._close)
-        lay.addWidget(self.buttons)
+        s.footer.addWidget(self.close_btn)
+        s.footer.addWidget(self.send_btn)
 
         self.bridge = _Bridge()
         self.bridge.progress.connect(lambda f: self.progress.setValue(int(f * 1000)))
@@ -119,7 +136,13 @@ class ShareDialog(QDialog):
         self.message.setFocus()
 
     def _sync_name(self):
-        self.as_label.setText(f"Posting as <b>{self.settings['display_name']}</b>")
+        self.as_label.setText(f"Posting as <b style='color:{theme.TEXT}'>{self.settings['display_name']}</b>  ·")
+
+    def _banner(self, text, kind=None):
+        self.status.setVisible(bool(text))
+        self.status.setText(text)
+        self.status.setProperty("kind", kind or "info")
+        theme.repolish(self.status)
 
     def _change_name(self):
         if ask_name(self.settings, self, first_time=False):
@@ -138,8 +161,11 @@ class ShareDialog(QDialog):
         self.message.setEnabled(False)
         self.progress.setValue(0)
         self.progress.show()
-        self.status.setText(f"Uploading to #{ch['name']}…")
-        self.status.setStyleSheet("")
+        self.progress_label.setText(f"Uploading to #{ch['name']}…")
+        self.progress_label.show()
+        self.send_btn.setText("Sending…")
+        self.send_btn.setIcon(QIcon())
+        self._banner("")
         cancel, bridge, path = self._cancel, self.bridge, self.path
         username = f"{self.settings['display_name']} via ClipDrop"
         content = self.message.text().strip()
@@ -160,19 +186,21 @@ class ShareDialog(QDialog):
     def _reset_controls(self):
         self._cancel = None
         self.send_btn.setEnabled(True)
+        self.send_btn.setText("Send")
+        self.send_btn.setIcon(theme.icon("share", theme.ON_ACCENT, width=2.2))
         self.channel.setEnabled(True)
         self.message.setEnabled(True)
         self.progress.hide()
+        self.progress_label.hide()
 
     def _on_done(self, _msg):
         ch = self.channel.currentData()
         self._reset_controls()
         self._sent = True
         self.settings.remember_share(self.src, ch["name"])
-        self.status.setText(f"Posted to #{ch['name']} ✓")
-        self.status.setObjectName("Good")
-        self.status.setStyleSheet("color:#3ba55d; font-weight:600;")
+        self._banner(f"✓  Posted to #{ch['name']}", "good")
         self.send_btn.setText("Done")
+        self.send_btn.setIcon(QIcon())
         self.close_btn.hide()
         self.channel.setEnabled(False)
         self.message.setEnabled(False)
@@ -180,13 +208,12 @@ class ShareDialog(QDialog):
 
     def _on_failed(self, msg, _too_big):
         self._reset_controls()
-        self.status.setText(msg)
-        self.status.setStyleSheet("color:#ed4245;")
+        self.send_btn.setText("Try again")
+        self._banner(msg, "warn" if "rate limit" in msg.lower() or "busy" in msg.lower() else "bad")
 
     def _on_cancelled(self):
         self._reset_controls()
-        self.status.setText("Cancelled.")
-        self.status.setStyleSheet("")
+        self._banner("Cancelled.")
         if self._closing:
             self.reject()
 
@@ -211,49 +238,69 @@ class AddChannelDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Add a Discord channel")
-        self.setMinimumWidth(520)
-        lay = QVBoxLayout(self)
-        lay.setSpacing(8)
-        how = QLabel("In Discord: right-click the channel → <b>Edit Channel</b> → <b>Integrations</b> → "
-                     "<b>Webhooks</b> → <b>New Webhook</b> → <b>Copy Webhook URL</b>. Paste it here.")
-        how.setWordWrap(True)
-        how.setObjectName("Muted")
+        s = Shell(self, "Add a Discord channel",
+                  "You need a webhook link from the channel. Anyone who can edit the channel can make one.", width=590)
+        lay = s.body
+        lay.setSpacing(6)
+        steps = ["Edit Channel", "Integrations", "Webhooks", "New Webhook", "Copy Webhook URL"]
+        how = label("In Discord, right-click the channel:<br>" + f"  <span style='color:{theme.FAINT}'>→</span>  ".join(
+            f"<b style='color:{theme.ACCENT}; font-family:\"{theme.MONO_FONT}\"'>{i}</b> {t}"
+            for i, t in enumerate(steps, 1)), "Steps", wrap=True)
         lay.addWidget(how)
-        lay.addWidget(QLabel("Channel name (just a label, e.g. clips)"))
+        lay.addSpacing(10)
+        lay.addWidget(label("Channel name (just a label, e.g. clips)", "Muted"))
         self.name = QLineEdit()
         self.name.setPlaceholderText("clips")
+        self.name.setMinimumHeight(36)
         lay.addWidget(self.name)
-        lay.addWidget(QLabel("Webhook URL"))
+        lay.addSpacing(8)
+        lay.addWidget(label("Webhook URL", "Muted"))
         self.url = QLineEdit()
         self.url.setPlaceholderText("https://discord.com/api/webhooks/…")
+        self.url.setMinimumHeight(36)
+        self.url.setStyleSheet(f"font-family: '{theme.MONO_FONT}'; font-size: 12px;")
         lay.addWidget(self.url)
-        self.status = QLabel("")
-        self.status.setWordWrap(True)
+        lay.addSpacing(6)
+        self.status = label("", wrap=True)
         lay.addWidget(self.status)
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("Check and add")
-        bb.button(QDialogButtonBox.Ok).setObjectName("Primary")
-        bb.accepted.connect(self._check)
-        bb.rejected.connect(self.reject)
-        lay.addWidget(bb)
+        s.footer.addStretch()
+        cancel = button("Cancel")
+        cancel.clicked.connect(self.reject)
+        self.ok = button("Check and add", "Primary")
+        self.ok.setDefault(True)
+        self.ok.clicked.connect(self._check)
+        s.footer.addWidget(cancel)
+        s.footer.addWidget(self.ok)
+
+    def _say(self, text, bad=False, field=None):
+        self.status.setText(text)
+        self.status.setStyleSheet(f"color: {theme.BAD if bad else theme.MUTED};")
+        for f in (self.name, self.url):
+            on = f is field
+            if bool(f.property("error")) != on:
+                f.setProperty("error", on)
+                theme.repolish(f)
 
     def _check(self):
         name = self.name.text().strip().lstrip("#")
         url = self.url.text().strip()
         if not name:
-            self.status.setText("Give the channel a name.")
+            self._say("Give the channel a name.", True, self.name)
             return
         if not share.is_webhook_url(url):
-            self.status.setText("That doesn't look like a Discord webhook URL. It starts with "
-                                "https://discord.com/api/webhooks/")
+            self._say("That doesn't look like a Discord webhook URL. It starts with "
+                      "https://discord.com/api/webhooks/", True, self.url)
             return
-        self.status.setText("Checking with Discord…")
+        self._say("Checking with Discord…")
+        self.ok.setEnabled(False)
         self.repaint()
         try:
             share.webhook_info(url)
         except share.ShareError as e:
-            self.status.setText(str(e))
+            self.ok.setEnabled(True)
+            self._say(str(e), True, self.url)
             return
+        self.ok.setEnabled(True)
         self.result_channel = {"name": name, "url": url}
         self.accept()
 

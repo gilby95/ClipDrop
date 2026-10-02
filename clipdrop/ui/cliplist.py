@@ -3,8 +3,8 @@ into Discord (drags the compressed copy if there is one, else the original)."""
 import datetime
 import os
 
-from PySide6.QtCore import QAbstractListModel, QMimeData, QModelIndex, QRectF, QSize, Qt, QUrl
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPixmap
+from PySide6.QtCore import QAbstractListModel, QMimeData, QModelIndex, QPointF, QRectF, QSize, Qt, QUrl
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QStyle, QStyledItemDelegate
 
 from ..library import norm
@@ -63,6 +63,7 @@ class ClipModel(QAbstractListModel):
         self.rows = []
         self.folder = None
         self.text = ""
+        self.progress = {}          # path -> 0..1 while that clip is compressing
         self._pix = {}
 
     # Filtering / sorting ------------------------------------------------------
@@ -141,7 +142,8 @@ class ClipModel(QAbstractListModel):
         if role == Qt.DisplayRole:
             return clip.name
         if role == Qt.ToolTipRole:
-            return clip.path + "\n\nDrag into Discord to send it (the compressed copy if you've made one)."
+            what = "the compressed copy" if self.settings.export_for(clip.path) else "the original"
+            return f"{clip.path}\n\nDrag into Discord ({what})"
         return None
 
     def flags(self, index):
@@ -170,6 +172,9 @@ class ClipModel(QAbstractListModel):
 
 
 class ClipDelegate(QStyledItemDelegate):
+    """Clip cards: 88 px tall, 128×72 thumbnail, name / game · size / time, NEW + ready pills,
+    and a drag grip on hover so it's obvious the card can be dragged into Discord."""
+
     def __init__(self, model, settings, parent=None):
         super().__init__(parent)
         self.model = model
@@ -177,115 +182,153 @@ class ClipDelegate(QStyledItemDelegate):
 
     def sizeHint(self, option, index):
         if index.data(HeaderRole):
-            return QSize(260, 34)
-        return QSize(260, THUMB_H + 16)
+            return QSize(260, 36)
+        return QSize(260, 90)
 
     def _paint_header(self, p, opt, h):
-        r = QRectF(opt.rect).adjusted(12, 0, -12, 0)
-        f = QFont(opt.font)
-        f.setPointSizeF(8.5)
-        f.setBold(True)
+        r = QRectF(opt.rect).adjusted(18, 0, -18, 0)
+        y = r.top() + 14
+        f = theme.ui(11, QFont.DemiBold)
+        f.setLetterSpacing(QFont.AbsoluteSpacing, 0.9)
         p.setFont(f)
-        p.setPen(QColor(theme.TEXT))
-        fm = QFontMetrics(f)
-        title = h.title.upper()
-        p.drawText(QRectF(r.left(), r.top() + 10, r.width(), 20), Qt.AlignLeft | Qt.AlignVCenter, title)
-        x = r.left() + fm.horizontalAdvance(title) + 8
         p.setPen(QColor(theme.MUTED))
-        p.drawText(QRectF(x, r.top() + 10, 40, 20), Qt.AlignLeft | Qt.AlignVCenter, str(h.count))
-        x += fm.horizontalAdvance(str(h.count)) + 10
-        p.setPen(QColor(theme.BORDER))
-        p.drawLine(int(x), int(r.top() + 20), int(r.right()), int(r.top() + 20))
-
-    def _pill(self, p, x, y, text, bg, fg="white"):
-        f = QFont(p.font())
-        f.setPointSizeF(7.5)
-        f.setBold(True)
+        title = h.title.upper()
+        tw = QFontMetrics(f).horizontalAdvance(title)
+        p.drawText(QRectF(r.left(), y, tw + 4, 18), Qt.AlignLeft | Qt.AlignVCenter, title)
+        x = r.left() + tw + 8
+        f = theme.mono(11)
         p.setFont(f)
-        w = QFontMetrics(f).horizontalAdvance(text) + 12
-        r = QRectF(x, y, w, 17)
-        p.setPen(Qt.NoPen)
+        p.setPen(QColor(theme.FAINT))
+        cw = QFontMetrics(f).horizontalAdvance(str(h.count))
+        p.drawText(QRectF(x, y, cw + 4, 18), Qt.AlignLeft | Qt.AlignVCenter, str(h.count))
+        x += cw + 10
+        p.setPen(QColor(theme.BORDER))
+        p.drawLine(QPointF(x, y + 9.5), QPointF(r.right(), y + 9.5))
+
+    def _pill(self, p, right, cy, text, bg, fg, border=None, mono=False, check=False, bold=True):
+        f = theme.mono(10.5, QFont.DemiBold) if mono else theme.ui(10.5, QFont.Bold if bold else QFont.DemiBold)
+        if text == "NEW":
+            f.setLetterSpacing(QFont.AbsoluteSpacing, 0.6)
+        p.setFont(f)
+        tw = QFontMetrics(f).horizontalAdvance(text)
+        w = tw + 14 + (12 if check else 0)
+        r = QRectF(right - w, cy - 9, w, 18)
+        p.setPen(QPen(QColor(border), 1) if border else Qt.NoPen)
         p.setBrush(QColor(bg))
-        p.drawRoundedRect(r, 8.5, 8.5)
+        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 9, 9)
+        x = r.left() + 7
+        if check:
+            pen = QPen(QColor(fg), 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            path = QPainterPath(QPointF(x, cy))
+            path.lineTo(x + 3, cy + 3)
+            path.lineTo(x + 8, cy - 3)
+            p.drawPath(path)
+            x += 12
         p.setPen(QColor(fg))
-        p.drawText(r, Qt.AlignCenter, text)
+        p.drawText(QRectF(x, r.top(), tw + 2, r.height()), Qt.AlignLeft | Qt.AlignVCenter, text)
         return w
 
     def paint(self, p, opt, index):
         h = index.data(HeaderRole)
         if h:
             p.save()
+            p.setRenderHint(QPainter.Antialiasing)
             self._paint_header(p, opt, h)
             p.restore()
             return
         clip = index.data(ClipRole)
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
-        r = QRectF(opt.rect).adjusted(6, 3, -6, -3)
-        if opt.state & QStyle.State_Selected:
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(theme.SURFACE_HI))
-            p.drawRoundedRect(r, 8, 8)
-        elif opt.state & QStyle.State_MouseOver:
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(theme.SURFACE))
-            p.drawRoundedRect(r, 8, 8)
+        r = QRectF(opt.rect).adjusted(8, 1, -8, -1)
+        selected = bool(opt.state & QStyle.State_Selected)
+        hover = bool(opt.state & QStyle.State_MouseOver)
+        if selected:
+            p.setPen(QPen(QColor(theme.ACCENT_LINE), 1))
+            p.setBrush(QColor(theme.CARD_SEL))
+            p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
+        elif hover:
+            p.setPen(QPen(QColor(theme.BORDER), 1))
+            p.setBrush(QColor("#1a1d21"))
+            p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
 
-        tr = QRectF(r.left() + 5, r.top() + 5, THUMB_W, THUMB_H)
-        path = QPainterPath()
-        path.addRoundedRect(tr, 6, 6)
-        p.setClipPath(path)
-        p.fillRect(tr, QColor("#0b0b0d"))
-        pm = self.model.pixmap(clip)
-        if pm:
-            src = QRectF(0, 0, pm.width(), pm.height())
-            scale = max(tr.width() / src.width(), tr.height() / src.height())
-            sw, sh = tr.width() / scale, tr.height() / scale
-            src = QRectF((src.width() - sw) / 2, (src.height() - sh) / 2, sw, sh)
-            p.drawPixmap(tr, pm, src)
-        p.setClipping(False)
+        tr = QRectF(r.left() + 8, r.center().y() - THUMB_H / 2, THUMB_W, THUMB_H)
+        if clip.error:
+            p.setPen(QPen(QColor(theme.BAD_LINE), 1))
+            p.setBrush(QColor("#1a1416"))
+            p.drawRoundedRect(tr.adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
+            ic = theme.icon_pixmap("alert", theme.BAD, 22)
+            p.drawPixmap(QPointF(tr.center().x() - 11, tr.center().y() - 11), ic)
+        else:
+            path = QPainterPath()
+            path.addRoundedRect(tr, 6, 6)
+            p.setClipPath(path)
+            p.fillRect(tr, QColor("#0b0b0d"))
+            pm = self.model.pixmap(clip)
+            if pm:
+                src = QRectF(0, 0, pm.width(), pm.height())
+                scale = max(tr.width() / src.width(), tr.height() / src.height())
+                sw, sh = tr.width() / scale, tr.height() / scale
+                src = QRectF((src.width() - sw) / 2, (src.height() - sh) / 2, sw, sh)
+                p.drawPixmap(tr, pm, src)
+            p.setClipping(False)
+            if clip.info:
+                f = theme.mono(11)
+                p.setFont(f)
+                txt = fmt_time(clip.info["duration"], 0)
+                w = QFontMetrics(f).horizontalAdvance(txt) + 10
+                br = QRectF(tr.right() - w - 4, tr.bottom() - 20, w, 16)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(0, 0, 0, 192))
+                p.drawRoundedRect(br, 4, 4)
+                p.setPen(QColor("white"))
+                p.drawText(br, Qt.AlignCenter, txt)
 
-        f = QFont(opt.font)
-        if clip.info:
-            f.setPointSizeF(8)
-            f.setBold(True)
-            p.setFont(f)
-            txt = fmt_time(clip.info["duration"], 0)
-            w = QFontMetrics(f).horizontalAdvance(txt) + 10
-            br = QRectF(tr.right() - w - 4, tr.bottom() - 20, w, 16)
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(0, 0, 0, 190))
-            p.drawRoundedRect(br, 4, 4)
-            p.setPen(QColor("white"))
-            p.drawText(br, Qt.AlignCenter, txt)
-
+        grip_w = 14
         x = tr.right() + 12
-        w = r.right() - x - 6
-        f = QFont(opt.font)
-        f.setBold(True)
+        right = r.right() - grip_w - 4
+        w = right - x
+        f = theme.ui(13, QFont.DemiBold)
         p.setFont(f)
-        p.setPen(QColor(theme.TEXT))
+        p.setPen(QColor(theme.MUTED if clip.error else theme.TEXT))
         name = QFontMetrics(f).elidedText(os.path.splitext(clip.name)[0], Qt.ElideMiddle, int(w))
-        p.drawText(QRectF(x, r.top() + 6, w, 20), Qt.AlignLeft | Qt.AlignVCenter, name)
+        top = r.center().y() - 33
+        p.drawText(QRectF(x, top, w, 20), Qt.AlignLeft | Qt.AlignVCenter, name)
 
-        f = QFont(opt.font)
-        f.setPointSizeF(8.5)
+        f = theme.ui(12)
         p.setFont(f)
-        p.setPen(QColor(theme.MUTED))
         fm = QFontMetrics(f)
-        line2 = f"{clip.group}  ·  {fmt_size(clip.size)}"
-        p.drawText(QRectF(x, r.top() + 26, w, 18), Qt.AlignLeft | Qt.AlignVCenter, fm.elidedText(line2, Qt.ElideMiddle, int(w)))
         if clip.error:
             p.setPen(QColor(theme.BAD))
-            line3 = "Can't read this file"
+            line2 = "Can't read this file"
         else:
-            line3 = when(clip.mtime)
-        p.drawText(QRectF(x, r.top() + 44, w, 18), Qt.AlignLeft | Qt.AlignVCenter, line3)
+            p.setPen(QColor(theme.MUTED))
+            line2 = f"{clip.group}  ·  {fmt_size(clip.size)}"
+        p.drawText(QRectF(x, top + 21, w, 18), Qt.AlignLeft | Qt.AlignVCenter, fm.elidedText(line2, Qt.ElideMiddle, int(w)))
+        p.setPen(QColor(theme.FAINT))
+        line3 = when(clip.mtime)
+        p.drawText(QRectF(x, top + 45, w, 18), Qt.AlignLeft | Qt.AlignVCenter, line3)
 
-        px = x + fm.horizontalAdvance(line3) + 8
+        cy = top + 54
+        px = right
+        prog = self.model.progress.get(clip.path)
+        if prog is not None:
+            px -= self._pill(p, px, cy, f"{int(prog * 100)}%", theme.ACCENT_SOFT, theme.ACCENT_HI,
+                             theme.ACCENT_LINE, mono=True) + 6
+        else:
+            e = self.settings.export_for(clip.path)
+            if e:
+                px -= self._pill(p, px, cy, fmt_size(e["size"]), theme.GOOD_SOFT, theme.GOOD, theme.GOOD_LINE,
+                                 check=True, bold=False) + 6
         if clip.new:
-            px += self._pill(p, px, r.top() + 45, "NEW", theme.ACCENT) + 5
-        e = self.settings.export_for(clip.path)
-        if e:
-            self._pill(p, px, r.top() + 45, f"✓ {fmt_size(e['size'])}", "#1f3b2a", "#7ee2a0")
+            self._pill(p, px, cy, "NEW", theme.ACCENT, theme.ON_ACCENT)
+
+        if (selected or hover) and not clip.error:      # drag grip: "you can pull this out"
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(theme.MUTED if selected else theme.FAINT))
+            gx = r.right() - grip_w + 2
+            for row in range(3):
+                for col in range(2):
+                    p.drawEllipse(QPointF(gx + col * 5, r.center().y() - 5 + row * 5), 1.5, 1.5)
         p.restore()

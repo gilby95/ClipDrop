@@ -5,21 +5,25 @@ import subprocess
 import threading
 import time
 
-from PySide6.QtCore import QObject, QPoint, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDrag, QGuiApplication, QPixmap
+from PySide6.QtCore import QObject, QPoint, QPointF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QDrag, QFontMetrics, QGuiApplication, QPainter, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout, QLabel,
-                               QProgressBar, QPushButton, QSlider, QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QGridLayout, QHBoxLayout,
+                               QLabel, QProgressBar, QPushButton, QSlider, QStackedWidget, QVBoxLayout, QWidget)
 
 from .. import compress
 from ..media import GPU_NAMES, fmt_size, fmt_time, gpu_encoder
 from ..settings import SIZE_PRESETS
+from . import theme
 from .timeline import Timeline
 
 RESOLUTIONS = [("Auto", "auto"), ("Original", "source"), ("1440p", "1440"), ("1080p", "1080"),
                ("720p", "720"), ("480p", "480")]
 FRAME_RATES = [("Auto", "auto"), ("Original", "source"), ("60 fps", "60"), ("30 fps", "30")]
+SHORTCUTS = [("Play / pause", "Space"), ("Set start / end", "I  O  or  [  ]"), ("Jump 1 s (Shift: 5 s)", "←  →"),
+             ("One frame", ",  ."), ("Zoom timeline", "Wheel"), ("Reset zoom", "Double-click"),
+             ("Compress", "Ctrl+Enter")]
 
 
 def copy_file_to_clipboard(path):
@@ -45,6 +49,65 @@ def _label(text="", name=None, wrap=False):
     return lab
 
 
+def _button(text, name=None, icon=None, icon_color=theme.TEXT, tip=None):
+    b = QPushButton(f" {text}" if icon and text else text)
+    if name:
+        b.setObjectName(name)
+    if icon:
+        b.setIcon(theme.icon(icon, icon_color))
+        b.setIconSize(theme.ICON_SIZE)
+    if tip:
+        b.setToolTip(tip)
+    b.setFocusPolicy(Qt.NoFocus)
+    return b
+
+
+def _hairline():
+    f = QFrame()
+    f.setObjectName("Hairline")
+    return f
+
+
+def _icon_label(name, color, size=16):
+    lab = QLabel()
+    lab.setPixmap(theme.icon_pixmap(name, color, size))
+    lab.setFixedSize(size, size)
+    return lab
+
+
+def _grip_pixmap(color, dot=2.0, gap=5, dpr=2.0):
+    pm = QPixmap(int(12 * dpr), int(16 * dpr))
+    pm.fill(Qt.transparent)
+    pm.setDevicePixelRatio(dpr)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(color))
+    for row in range(3):
+        for col in range(2):
+            p.drawEllipse(QPointF(3 + col * gap, 3 + row * gap), dot, dot)
+    p.end()
+    return pm
+
+
+def _step_tile(icon_name, text, lime=False):
+    w = QWidget()
+    lay = QVBoxLayout(w)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(10)
+    tile = QLabel()
+    tile.setObjectName("TileLime" if lime else "Tile")
+    tile.setFixedSize(56, 56)
+    tile.setAlignment(Qt.AlignCenter)
+    tile.setPixmap(theme.icon_pixmap(icon_name, theme.ACCENT if lime else theme.TEXT, 24, 1.8))
+    lay.addWidget(tile, 0, Qt.AlignHCenter)
+    cap = _label(text, "Muted")
+    cap.setAlignment(Qt.AlignCenter)
+    lay.addWidget(cap)
+    w.setFixedWidth(120)
+    return w
+
+
 class DropCard(QFrame):
     """The finished file. Drag it out and drop it in Discord."""
 
@@ -52,28 +115,38 @@ class DropCard(QFrame):
         super().__init__(parent)
         self.setObjectName("DropCard")
         self.setCursor(Qt.OpenHandCursor)
+        self.setToolTip("Drag into a Discord chat")
         self.path = None
         self._press = None
         self._pix = None
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(14)
+        lay.setContentsMargins(14, 14, 18, 14)
+        lay.setSpacing(16)
+        grip = QLabel()
+        grip.setPixmap(_grip_pixmap(theme.ACCENT))
+        lay.addWidget(grip)
         self.thumb = QLabel()
         self.thumb.setFixedSize(128, 72)
-        self.thumb.setStyleSheet("background:#0b0b0d; border-radius:6px;")
+        self.thumb.setStyleSheet("background:#0b0b0d; border-radius:8px;")
         lay.addWidget(self.thumb)
         col = QVBoxLayout()
-        col.setSpacing(2)
-        col.addWidget(_label("Drag me into Discord", "Big"))
-        self.file_label = _label("", "Muted")
+        col.setSpacing(4)
+        title = _label("Drag me into Discord")
+        title.setStyleSheet("font-size: 19px; font-weight: 700;")
+        col.addWidget(title)
+        self.file_label = _label("")
+        self.file_label.setStyleSheet(f"color: {theme.TEXT_2}; font-size: 12px;")
         col.addWidget(self.file_label)
-        col.addWidget(_label("…or press Copy below, then Ctrl+V in any Discord chat.", "Hint"))
+        col.addWidget(_label("…or press Copy, then Ctrl+V in any Discord chat.", "Faint"))
         lay.addLayout(col, 1)
+        lay.addWidget(_icon_label("arrow", theme.ACCENT, 32))
 
     def set_file(self, path, size, pixmap):
         self.path = path
         self._pix = pixmap
-        self.file_label.setText(f"{os.path.basename(path)}  ·  {fmt_size(size)}")
+        name = self.file_label.fontMetrics().elidedText(os.path.basename(path), Qt.ElideMiddle, 360)
+        self.file_label.setText(f"{name}  <span style='color:{theme.FAINT}'>·</span>  "
+                                f"<b style='color:{theme.ACCENT}'>{fmt_size(size)}</b>")
         if pixmap:
             self.thumb.setPixmap(pixmap.scaled(QSize(128, 72), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
                                  .copy(0, 0, 128, 72))
@@ -83,6 +156,7 @@ class DropCard(QFrame):
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
             self._press = e.position().toPoint()
+            self.setCursor(Qt.ClosedHandCursor)
 
     def mouseMoveEvent(self, e):
         if not self._press or not self.path:
@@ -99,9 +173,43 @@ class DropCard(QFrame):
             drag.setPixmap(self._pix.scaled(160, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             drag.setHotSpot(QPoint(80, 45))
         drag.exec(Qt.CopyAction)
+        self.setCursor(Qt.OpenHandCursor)
 
     def mouseReleaseEvent(self, _):
         self._press = None
+        self.setCursor(Qt.OpenHandCursor)
+
+
+class ShortcutsPopover(QFrame):
+    """The "?" list of keys. Opens downward from its button, never over the video."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        box = QWidget()
+        box.setObjectName("Popover")
+        box.setAttribute(Qt.WA_StyledBackground)
+        outer.addWidget(box)
+        lay = QGridLayout(box)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setHorizontalSpacing(24)
+        lay.setVerticalSpacing(9)
+        head = _label("Keyboard shortcuts")
+        head.setStyleSheet("font-weight: 600;")
+        lay.addWidget(head, 0, 0, 1, 2)
+        for i, (what, key) in enumerate(SHORTCUTS, 1):
+            w = _label(what)
+            w.setStyleSheet(f"color: {theme.TEXT_2};")
+            lay.addWidget(w, i, 0)
+            lay.addWidget(_label(key, "Kbd"), i, 1, Qt.AlignRight)
+
+    def show_under(self, button):
+        self.adjustSize()
+        g = button.mapToGlobal(QPoint(button.width(), button.height() + 6))
+        self.move(g.x() - self.width(), g.y())
+        self.show()
 
 
 class _Bridge(QObject):
@@ -115,10 +223,12 @@ class EditorPane(QWidget):
     exported = Signal(str)          # source path
     status = Signal(str)
     wantChannels = Signal()
+    jobProgress = Signal(str, float)  # source path, 0..1 (or -1 when the job ends)
 
     def __init__(self, settings, parent=None):
         super().__init__(parent)
         self.setObjectName("Editor")
+        self.setAttribute(Qt.WA_StyledBackground)
         self.settings = settings
         self.clip = None
         self.thumb_pix = None
@@ -158,31 +268,45 @@ class EditorPane(QWidget):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.addStretch()
-        t = _label("Pick a clip on the left", "Big")
+        steps = QHBoxLayout()
+        steps.setSpacing(14)
+        steps.addStretch()
+        for i, (ic, text) in enumerate((("video", "Pick a clip"), ("trim", "Trim + shrink"), ("drop", "Drop in Discord"))):
+            if i:
+                steps.addWidget(_icon_label("arrow", theme.BORDER_HI, 20), 0, Qt.AlignTop)
+            steps.addWidget(_step_tile(ic, text, lime=i == 2))
+        steps.addStretch()
+        lay.addLayout(steps)
+        lay.addSpacing(26)
+        t = _label("Pick a clip on the left", "Display")
         t.setAlignment(Qt.AlignCenter)
         h = _label("Trim it, shrink it to fit Discord, then drag it straight into your chat.", "Muted")
+        h.setStyleSheet("font-size: 14px;")
         h.setAlignment(Qt.AlignCenter)
         lay.addWidget(t)
+        lay.addSpacing(6)
         lay.addWidget(h)
         lay.addStretch()
+        lay.addSpacing(40)
         return w
 
     def _build_editor(self):
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(18, 14, 18, 14)
-        lay.setSpacing(10)
+        lay.setContentsMargins(24, 18, 24, 18)
+        lay.setSpacing(12)
 
         head = QHBoxLayout()
         col = QVBoxLayout()
-        col.setSpacing(0)
+        col.setSpacing(3)
         self.title = _label("", "ClipTitle")
         self.title.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.subtitle = _label("", "Muted")
+        self.subtitle.setStyleSheet("font-size: 12px;")
         col.addWidget(self.title)
         col.addWidget(self.subtitle)
         head.addLayout(col, 1)
-        open_btn = QPushButton("Show in folder")
+        open_btn = _button("Show in folder", icon="folder")
         open_btn.clicked.connect(lambda: self.clip and show_in_folder(self.clip.path))
         head.addWidget(open_btn, 0, Qt.AlignTop)
         lay.addLayout(head)
@@ -193,9 +317,10 @@ class EditorPane(QWidget):
         self.video.setMinimumHeight(220)
         self.player.setVideoOutput(self.video)
         self.video_stack.addWidget(self.video)
-        self.video_msg = _label("", "Muted", wrap=True)
+        self.video_msg = _label("", wrap=True)
         self.video_msg.setAlignment(Qt.AlignCenter)
-        self.video_msg.setStyleSheet("background:black; padding:30px;")
+        self.video_msg.setStyleSheet(f"background:{theme.LIST}; border:1px dashed {theme.BORDER_HI}; "
+                                     f"border-radius:10px; color:{theme.MUTED}; padding:30px; font-size:13px;")
         self.video_stack.addWidget(self.video_msg)
         lay.addWidget(self.video_stack, 1)
 
@@ -206,120 +331,208 @@ class EditorPane(QWidget):
 
         ctl = QHBoxLayout()
         ctl.setSpacing(6)
-        self.play_btn = QPushButton("▶")
-        self.play_btn.setObjectName("Icon")
-        self.play_btn.setToolTip("Play / pause (Space)")
+        self.play_btn = _button("", "Play", tip="Play / pause (Space)")
+        self.play_btn.setIconSize(QSize(16, 16))
+        self._play_icons = (theme.icon("play", theme.BG), theme.icon("pause", theme.BG))
+        self.play_btn.setIcon(self._play_icons[0])
         self.play_btn.clicked.connect(self.toggle_play)
         ctl.addWidget(self.play_btn)
-        self.time_label = _label("0:00.0 / 0:00.0", "Muted")
-        self.time_label.setMinimumWidth(130)
+        self.time_label = _label("0:00.0 / 0:00.0", "Time")
+        self.time_label.setMinimumWidth(QFontMetrics(theme.mono(14)).horizontalAdvance("0:00.0 / 0:00.0") + 10)
         ctl.addWidget(self.time_label)
-        ctl.addStretch()
-        b_in = QPushButton("[  Start here")
-        b_in.setToolTip("Start the clip at the playhead (I or [)")
+        b_in = _button("[  Start here", tip="Start the clip at the playhead (I or [)")
         b_in.clicked.connect(self.set_in)
-        b_out = QPushButton("End here  ]")
-        b_out.setToolTip("End the clip at the playhead (O or ])")
+        b_out = _button("End here  ]", tip="End the clip at the playhead (O or ])")
         b_out.clicked.connect(self.set_out)
-        b_reset = QPushButton("Reset")
-        b_reset.setObjectName("Flat")
-        b_reset.setToolTip("Keep the whole video")
+        b_reset = _button("Reset", "Flat", "reset", theme.MUTED, "Keep the whole video")
         b_reset.clicked.connect(self.reset_trim)
         for b in (b_in, b_out, b_reset):
-            b.setFocusPolicy(Qt.NoFocus)
             ctl.addWidget(b)
-        self.sel_label = _label("", "Muted")
-        self.sel_label.setMinimumWidth(110)
-        ctl.addWidget(self.sel_label)
         ctl.addStretch()
-        self.loop_box = QCheckBox("Loop")
-        self.loop_box.setToolTip("Loop the selected part while previewing")
+        self.sel_label = _label("", "ClipPill")
+        self.sel_label.setToolTip("Length of the part you're keeping")
+        ctl.addWidget(self.sel_label)
+        self.loop_box = _button("", "Icon", tip="Loop the selected part while previewing")
+        self.loop_box.setCheckable(True)
+        loop_ic = theme.icon("loop", theme.MUTED)
+        loop_ic.addPixmap(theme.icon_pixmap("loop", theme.ACCENT, 16), theme.QIcon.Normal, theme.QIcon.On)
+        self.loop_box.setIcon(loop_ic)
+        self.loop_box.setIconSize(theme.ICON_SIZE)
         self.loop_box.setChecked(bool(self.settings["loop"]))
         self.loop_box.toggled.connect(lambda v: self.settings.__setitem__("loop", v))
         ctl.addWidget(self.loop_box)
-        ctl.addWidget(_label("🔊"))
+        ctl.addSpacing(4)
+        ctl.addWidget(_icon_label("volume", theme.MUTED))
         self.vol = QSlider(Qt.Horizontal)
-        self.vol.setFixedWidth(90)
+        self.vol.setFixedWidth(76)
         self.vol.setRange(0, 100)
         self.vol.setValue(int(float(self.settings["volume"]) * 100))
         self.vol.valueChanged.connect(self._on_volume)
+        self.vol.setToolTip("Volume")
+        self.vol.setFocusPolicy(Qt.NoFocus)
         ctl.addWidget(self.vol)
-        for wdg in (self.play_btn, self.loop_box, self.vol):
-            wdg.setFocusPolicy(Qt.NoFocus)
+        keys = _button("?", "Icon", tip="Keyboard shortcuts")
+        self._keys_pop = None
+        keys.clicked.connect(lambda: self._show_keys(keys))
+        ctl.addWidget(keys)
         lay.addLayout(ctl)
 
-        card = QFrame()
-        card.setObjectName("Card")
-        cl = QVBoxLayout(card)
-        cl.setContentsMargins(16, 14, 16, 14)
+        self.card = QFrame()
+        self.card.setObjectName("Card")
+        cl = QVBoxLayout(self.card)
+        cl.setContentsMargins(18, 16, 18, 16)
         self.export_stack = QStackedWidget()
         self.export_stack.addWidget(self._build_options())
         self.export_stack.addWidget(self._build_progress())
         self.export_stack.addWidget(self._build_ready())
+        self.export_stack.currentChanged.connect(self._sync_card)
         cl.addWidget(self.export_stack)
-        lay.addWidget(card)
+        lay.addWidget(self.card)
         return w
+
+    def _show_keys(self, btn):
+        if self._keys_pop is None:
+            self._keys_pop = ShortcutsPopover(self)
+        self._keys_pop.show_under(btn)
+
+    def _sync_card(self, *_):
+        """The ready page is its own drop card, so the outer card disappears there."""
+        from PySide6.QtWidgets import QSizePolicy
+        cur = self.export_stack.currentIndex()
+        for i in range(self.export_stack.count()):     # size the card to the page that's showing
+            pol = QSizePolicy.Preferred if i == cur else QSizePolicy.Ignored
+            self.export_stack.widget(i).setSizePolicy(pol, pol)
+        self.export_stack.adjustSize()
+        ready = cur == 2
+        self.card.setStyleSheet("QFrame#Card { background: transparent; border: none; }" if ready else "")
+        self.card.layout().setContentsMargins(*((0, 0, 0, 0) if ready else (18, 16, 18, 16)))
+
+    def _set_card_bad(self, bad):
+        if self.card.property("bad") != bad:
+            self.card.setProperty("bad", bad)
+            theme.repolish(self.card)
 
     def _build_options(self):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(10)
+        lay.setSpacing(14)
 
         row = QHBoxLayout()
-        row.setSpacing(8)
-        row.addWidget(_label("Fit under"))
+        row.setSpacing(12)
+        fit = QVBoxLayout()
+        fit.setSpacing(6)
+        fit.addWidget(_label("Fit under", "Muted"))
+        fit_row = QHBoxLayout()
+        fit_row.setSpacing(8)
         self.size_combo = QComboBox()
         for key, label, _mb in SIZE_PRESETS:
-            self.size_combo.addItem(label, key)
+            self.size_combo.addItem(label.replace(" - ", " · ").replace("Custom size...", "Custom…"), key)
+        self.size_combo.setMinimumWidth(220)
         self.size_combo.setCurrentIndex(max(0, self.size_combo.findData(self.settings["size_preset"])))
         self.size_combo.currentIndexChanged.connect(self._on_preset)
-        row.addWidget(self.size_combo)
+        fit_row.addWidget(self.size_combo)
         self.custom_mb = QDoubleSpinBox()
         self.custom_mb.setRange(1, 10000)
         self.custom_mb.setDecimals(0)
         self.custom_mb.setSuffix(" MB")
+        self.custom_mb.setFixedWidth(100)
+        self.custom_mb.setButtonSymbols(QDoubleSpinBox.NoButtons)
         self.custom_mb.setValue(float(self.settings["custom_mb"]))
         self.custom_mb.valueChanged.connect(self._on_custom_mb)
-        row.addWidget(self.custom_mb)
-        row.addSpacing(10)
-        row.addWidget(_label("Resolution"))
-        self.res_combo = self._combo(RESOLUTIONS, "resolution")
-        row.addWidget(self.res_combo)
-        row.addWidget(_label("Frame rate"))
-        self.fps_combo = self._combo(FRAME_RATES, "fps")
-        row.addWidget(self.fps_combo)
-        row.addStretch()
-        lay.addLayout(row)
+        fit_row.addWidget(self.custom_mb)
+        fit.addLayout(fit_row)
+        row.addLayout(fit)
 
-        row2 = QHBoxLayout()
+        self.adv = QWidget()
+        adv = QHBoxLayout(self.adv)
+        adv.setContentsMargins(0, 0, 0, 0)
+        adv.setSpacing(12)
+        for title, items, key in (("Resolution", RESOLUTIONS, "resolution"), ("Frame rate", FRAME_RATES, "fps")):
+            c = QVBoxLayout()
+            c.setSpacing(6)
+            c.addWidget(_label(title, "Muted"))
+            combo = self._combo(items, key)
+            combo.setMinimumWidth(110)
+            c.addWidget(combo)
+            adv.addLayout(c)
+            if key == "resolution":
+                self.res_combo = combo
+            else:
+                self.fps_combo = combo
+        row.addWidget(self.adv, 0, Qt.AlignBottom)
+        self.adv_btn = _button("", "Flat")
+        self.adv_btn.setLayoutDirection(Qt.RightToLeft)
+        self.adv_btn.clicked.connect(self._toggle_advanced)
+        row.addWidget(self.adv_btn, 0, Qt.AlignBottom)
+        row.addStretch()
+
+        boxes = QVBoxLayout()
+        boxes.setSpacing(8)
         self.mix_box = QCheckBox("Mix all audio tracks")
         self.mix_box.setToolTip("Recordings from OBS can have several audio tracks (game, mic, Discord).\n"
                                 "On: everything ends up in the clip. Off: only the first track.")
         self.mix_box.setChecked(bool(self.settings["mix_audio"]))
         self.mix_box.toggled.connect(lambda v: (self.settings.__setitem__("mix_audio", v)))
-        row2.addWidget(self.mix_box)
+        boxes.addWidget(self.mix_box)
         self.copy_box = QCheckBox("Copy to clipboard when done")
         self.copy_box.setToolTip("Then just press Ctrl+V in Discord")
         self.copy_box.setChecked(bool(self.settings["copy_when_done"]))
         self.copy_box.toggled.connect(lambda v: self.settings.__setitem__("copy_when_done", v))
-        row2.addWidget(self.copy_box)
-        row2.addStretch()
-        lay.addLayout(row2)
+        boxes.addWidget(self.copy_box)
+        row.addLayout(boxes)
+        lay.addLayout(row)
+        lay.addWidget(_hairline())
 
         row3 = QHBoxLayout()
-        self.plan_label = _label("", "Muted", wrap=True)
-        row3.addWidget(self.plan_label, 1)
-        self.go_btn = QPushButton("Compress for Discord")
-        self.go_btn.setObjectName("Primary")
-        self.go_btn.setToolTip("Ctrl+Enter")
+        row3.setSpacing(20)
+        plan = QVBoxLayout()
+        plan.setSpacing(8)
+        self.plan_label = _label("", wrap=True)
+        self.plan_label.setStyleSheet("font-size: 14px;")
+        plan.addWidget(self.plan_label)
+        self.plan_detail = _label("", "Mono")
+        plan.addWidget(self.plan_detail)
+        meter = QHBoxLayout()
+        meter.setSpacing(10)
+        self.meter = QProgressBar()
+        self.meter.setProperty("thin", True)
+        self.meter.setRange(0, 1000)
+        meter.addWidget(self.meter, 1)
+        self.meter_label = _label("", "Mono")
+        meter.addWidget(self.meter_label)
+        self.meter_row = QWidget()
+        self.meter_row.setLayout(meter)
+        meter.setContentsMargins(0, 0, 0, 0)
+        plan.addWidget(self.meter_row)
+        row3.addLayout(plan, 1)
+        self.go_btn = _button("Compress for Discord", "Primary", tip="Compress for Discord (Ctrl+Enter)")
+        self.go_btn.setProperty("big", True)
         self.go_btn.clicked.connect(self.start_export)
-        row3.addWidget(self.go_btn)
+        row3.addWidget(self.go_btn, 0, Qt.AlignVCenter)
         lay.addLayout(row3)
         for wdg in (self.size_combo, self.res_combo, self.fps_combo, self.mix_box, self.copy_box, self.go_btn):
             wdg.setFocusPolicy(Qt.NoFocus)
+        self._advanced = self.settings["resolution"] != "auto" or self.settings["fps"] != "auto"
+        self._sync_advanced()
         self._sync_custom()
         return w
+
+    def _toggle_advanced(self):
+        self._advanced = not self._advanced
+        self._sync_advanced()
+        self._update_plan()
+
+    def _sync_advanced(self):
+        self.adv.setVisible(self._advanced)
+        if self._advanced:
+            self.adv_btn.setText("Hide")
+            self.adv_btn.setIcon(theme.icon("chevron-up", theme.MUTED))
+        else:
+            self.adv_btn.setText(f"Advanced  ·  {self.res_combo.currentText()} size, {self.fps_combo.currentText()}"
+                                 f"{' fps' if self.fps_combo.currentData() in ('auto', 'source') else ''}")
+            self.adv_btn.setIcon(theme.icon("chevron", theme.MUTED))
+        self.plan_detail.setVisible(self._advanced and bool(self.plan_detail.text()))
 
     def _combo(self, items, key):
         c = QComboBox()
@@ -334,19 +547,24 @@ class EditorPane(QWidget):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(0, 4, 0, 4)
+        lay.setSpacing(12)
         row = QHBoxLayout()
-        self.prog_label = _label("Starting…")
+        row.setSpacing(12)
+        self.prog_label = _label("Starting…", "Heading")
         row.addWidget(self.prog_label, 1)
         self.eta_label = _label("", "Muted")
         row.addWidget(self.eta_label)
-        lay.addLayout(row)
-        row = QHBoxLayout()
-        self.prog = QProgressBar()
-        self.prog.setRange(0, 1000)
-        row.addWidget(self.prog, 1)
-        cancel = QPushButton("Cancel")
+        cancel = _button("Cancel")
         cancel.clicked.connect(self.cancel_export)
         row.addWidget(cancel)
+        lay.addLayout(row)
+        self.prog = QProgressBar()
+        self.prog.setRange(0, 1000)
+        lay.addWidget(self.prog)
+        row = QHBoxLayout()
+        self.prog_plan = _label("", "Faint")
+        row.addWidget(self.prog_plan, 1)
+        row.addWidget(_label("You can keep browsing clips while this runs.", "Faint"))
         lay.addLayout(row)
         return w
 
@@ -354,26 +572,36 @@ class EditorPane(QWidget):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(10)
+        lay.setSpacing(12)
         self.drop = DropCard()
         lay.addWidget(self.drop)
-        row = QHBoxLayout()
+        info = QHBoxLayout()
+        info.setSpacing(10)
+        self.ready_meter = QProgressBar()
+        self.ready_meter.setProperty("thin", True)
+        self.ready_meter.setProperty("kind", "good")
+        self.ready_meter.setRange(0, 1000)
+        self.ready_meter.setFixedWidth(90)
+        info.addWidget(self.ready_meter)
         self.ready_info = _label("", "Muted", wrap=True)
-        row.addWidget(self.ready_info, 1)
-        share_btn = QPushButton("Share to Discord")
-        share_btn.setObjectName("Primary")
-        share_btn.setToolTip("Post it straight into one of your Discord channels")
+        info.addWidget(self.ready_info, 1)
+        lay.addLayout(info)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        share_btn = _button("Share to Discord", "Primary", "share", theme.ON_ACCENT,
+                            "Post it straight into one of your Discord channels")
         share_btn.clicked.connect(self._share)
-        copy = QPushButton("Copy")
-        copy.setToolTip("Copies the video file. Click Discord's message box and press Ctrl+V.")
+        copy = _button("Copy", icon="copy", tip="Copies the video file. Click Discord's message box and press Ctrl+V.")
         copy.clicked.connect(self._copy_ready)
-        folder = QPushButton("Show file")
+        folder = _button("Show file", icon="folder")
         folder.clicked.connect(lambda: self.drop.path and show_in_folder(self.drop.path))
-        again = QPushButton("Make another version")
+        again = _button("Make another version", "Flat", "reset", theme.MUTED)
         again.clicked.connect(lambda: self.export_stack.setCurrentIndex(0))
-        for b in (share_btn, copy, folder, again):
-            b.setFocusPolicy(Qt.NoFocus)
+        for b in (share_btn, copy, folder):
+            b.setMinimumHeight(40)
             row.addWidget(b)
+        row.addStretch()
+        row.addWidget(again)
         lay.addLayout(row)
         return w
 
@@ -436,7 +664,7 @@ class EditorPane(QWidget):
             bits.append(c.error)
         else:
             bits.append("reading…")
-        self.subtitle.setText("  ·  ".join(bits))
+        self.subtitle.setText("  <span style='color:#4a5058'>·</span>  ".join(bits))
 
     # Player -------------------------------------------------------------------
 
@@ -457,15 +685,16 @@ class EditorPane(QWidget):
             self.player.setPosition(self.b)
             ms = self.b
         self.timeline.set_position(ms)
-        self.time_label.setText(f"{fmt_time(ms / 1000)} / {fmt_time(self.timeline.dur / 1000)}")
+        self.time_label.setText(f"{fmt_time(ms / 1000)}<span style='color:{theme.FAINT}'> / "
+                                f"{fmt_time(self.timeline.dur / 1000)}</span>")
 
     def _on_state(self, state):
-        self.play_btn.setText("❚❚" if state == QMediaPlayer.PlayingState else "▶")
+        self.play_btn.setIcon(self._play_icons[state == QMediaPlayer.PlayingState])
 
     def _on_error(self, _err, msg):
         if self.clip:
-            self.video_msg.setText("Can't preview this video here" + (f" ({msg})" if msg else "") +
-                                   ".\nYou can still trim by time and compress it.")
+            self.video_msg.setText("<b style='color:#eceef1'>Can't preview this video here</b>" +
+                                   (f" ({msg})" if msg else "") + ".<br>You can still trim by time and compress it.")
             self.video_stack.setCurrentIndex(1)
 
     def _on_volume(self, v):
@@ -558,19 +787,40 @@ class EditorPane(QWidget):
     def _limit_label(self):
         return f"{self.settings.limit_mb():g} MB"
 
+    def _set_pill(self, text, bad=False):
+        self.sel_label.setText(text)
+        if self.sel_label.property("bad") != bad:
+            self.sel_label.setProperty("bad", bad)
+            theme.repolish(self.sel_label)
+
+    def _plan_text(self, html, bad=False, meter=None):
+        self.plan_label.setText(f"<span style='color:{theme.BAD}'>{html}</span>" if bad else html)
+        self._set_card_bad(bad)
+        self.meter_row.setVisible(meter is not None)
+        if meter is not None:
+            est, limit = meter
+            self.meter.setValue(int(min(1.0, est / limit) * 1000))
+            self.meter_label.setText(f"{est:.1f} / {limit:g} MB")
+
     def _update_plan(self):
         c = self.clip
+        self.plan_detail.setText("")
+        self.plan_detail.hide()
+        if hasattr(self, "adv_btn") and not self._advanced:
+            self._sync_advanced()
         if not c or not c.info:
-            self.plan_label.setText("Reading the video…" if c and not c.error else "")
+            self._plan_text(f"<span style='color:{theme.MUTED}'>Reading the video…</span>" if c and not c.error else "")
+            self._set_pill("")
             self.go_btn.setEnabled(False)
             return
         start, end = self.a / 1000, self.b / 1000
         limit = self.settings.limit_mb()
-        sel = f"{fmt_time(end - start)} selected"
-        self.sel_label.setText(fmt_time(end - start) + " clip")
+        length = fmt_time(end - start, 0)
+        sel = f"<b style='font-family:\"{theme.MONO_FONT}\"'>{length}</b> selected"
+        self._set_pill(fmt_time(end - start) + " clip")
         self.go_btn.setText("Compress for Discord")
         if compress.shareable_as_is(c.path, c.info, start, end, limit):
-            self.plan_label.setText(f"{sel}. Already under {self._limit_label()}, so no compressing needed.")
+            self._plan_text(f"{sel}. Already under {self._limit_label()}, so no compressing needed.")
             self.go_btn.setText("Use as is")
             self.go_btn.setEnabled(True)
             return
@@ -578,15 +828,21 @@ class EditorPane(QWidget):
             plan = compress.make_plan(c.info, end - start, limit, self.settings["resolution"], self.settings["fps"],
                                       has_audio=c.info["audio_tracks"] > 0)
         except compress.TooLong as e:
-            self.plan_label.setText(f"<span style='color:#ed4245'>{sel}: too long to fit in {self._limit_label()}. "
-                                    f"Trim it to under {fmt_time(e.max_seconds, 0)}.</span>")
+            self._plan_text(f"{sel}: too long to fit in {self._limit_label()}. "
+                            f"Trim it to under {fmt_time(e.max_seconds, 0)}.", bad=True)
+            self._set_pill(fmt_time(end - start) + " clip · too long", bad=True)
             self.go_btn.setEnabled(False)
             return
         except ValueError as e:
-            self.plan_label.setText(str(e))
+            self._plan_text(str(e))
             self.go_btn.setEnabled(False)
             return
-        self.plan_label.setText(f"{sel}  →  {plan.describe()}, about {min(plan.est_mb, limit):.1f} MB")
+        est = min(plan.est_mb, limit)
+        self._plan_text(f"{sel}  <span style='color:{theme.FAINT}'>→</span>  "
+                        f"<b>{plan.height}p{round(plan.fps)}</b>  <span style='color:{theme.FAINT}'>·</span>  "
+                        f"about <b>{est:.1f} MB</b>", meter=(est, limit))
+        self.plan_detail.setText(f"{plan.video_kbps / 1000:.1f} Mbps video · {plan.audio_kbps} kbps audio")
+        self.plan_detail.setVisible(self._advanced)
         self.go_btn.setEnabled(self._cancel is None)
 
     # Exporting ----------------------------------------------------------------
@@ -616,7 +872,9 @@ class EditorPane(QWidget):
         self.prog.setValue(0)
         self.prog_label.setText("Starting…")
         self.eta_label.setText("")
+        self.prog_plan.setText(re.sub(r"<[^>]+>", "", self.plan_label.text()).replace("selected  →", "→"))
         self.export_stack.setCurrentIndex(1)
+        self.jobProgress.emit(c.path, 0.0)
         out = self._out_path()
         info = dict(c.info)
         opts = dict(resolution=self.settings["resolution"], fps_pref=self.settings["fps"],
@@ -645,10 +903,13 @@ class EditorPane(QWidget):
         if frac < 0:                     # log line
             self.status.emit(label)
             return
+        if self._job_src:
+            self.jobProgress.emit(self._job_src, frac)
         if self.clip and self.clip.path != self._job_src:
             return
         self.prog.setValue(int(frac * 1000))
-        self.prog_label.setText(f"{label}…  {int(frac * 100)}%")
+        self.prog_label.setText(f"{label}…  <span style='color:{theme.ACCENT}; font-family:\"{theme.MONO_FONT}\"'>"
+                                f"{int(frac * 100)}%</span>")
         elapsed = time.time() - self._started
         if frac > 0.03 and elapsed > 2:
             left = elapsed / frac - elapsed
@@ -657,6 +918,8 @@ class EditorPane(QWidget):
     def _job_over(self):
         self._cancel = None
         src, self._job_src = self._job_src, None
+        if src:
+            self.jobProgress.emit(src, -1.0)
         return src
 
     def _on_done(self, r):
@@ -672,10 +935,11 @@ class EditorPane(QWidget):
         took = ""
         if r.get("plan"):
             enc = "GPU (" + GPU_NAMES.get(r["encoder"], "") + ")" if r["encoder"] not in (None, "cpu") else "CPU"
-            took = f"{r['plan'].describe()} · {enc} · took {int(time.time() - self._started)}s. "
+            p = r["plan"]
+            took = f"{p.height}p{round(p.fps)} · {enc} · took {int(time.time() - self._started)}s. "
         if self.copy_box.isChecked():
             copy_file_to_clipboard(r["path"])
-            note = took + "Copied. Click Discord's message box and press Ctrl+V."
+            note = took + f"<span style='color:{theme.GOOD}'>✓ Copied. Click Discord's message box and press Ctrl+V.</span>"
         else:
             note = took
         e = {"path": r["path"], "size": r["size"], "limit_mb": limit}
@@ -686,7 +950,9 @@ class EditorPane(QWidget):
 
     def _show_ready(self, e, note=""):
         self.drop.set_file(e["path"], e["size"], self.thumb_pix)
-        self.ready_info.setText(f"{fmt_size(e['size'])} of {e['limit_mb']:g} MB. {note}")
+        self.ready_meter.setValue(int(min(1.0, e["size"] / (e["limit_mb"] * 1e6)) * 1000))
+        self.ready_info.setText(f"<b style='color:{theme.TEXT}'>{fmt_size(e['size'])}</b> of {e['limit_mb']:g} MB. "
+                                f"{note}")
         self.export_stack.setCurrentIndex(2)
 
     def _share(self):
@@ -700,21 +966,23 @@ class EditorPane(QWidget):
             return
         src = self.clip.path if self.clip else self.drop.path
         dlg = ShareDialog(self.settings, src, self.drop.path, os.path.getsize(self.drop.path), self.thumb_pix, self)
-        dlg.shared.connect(lambda ch: (self.ready_info.setText(f"Posted to #{ch} ✓"),
-                                       self.status.emit(f"Posted to #{ch}")))
+        dlg.shared.connect(lambda ch: (self.ready_info.setText(
+            f"<span style='color:{theme.GOOD}; font-weight:600'>Posted to #{ch} ✓</span>"),
+            self.status.emit(f"Posted to #{ch}")))
         dlg.exec()
 
     def _copy_ready(self):
         if self.drop.path:
             copy_file_to_clipboard(self.drop.path)
-            self.ready_info.setText("Copied. Click Discord's message box and press Ctrl+V.")
+            self.ready_info.setText(f"<span style='color:{theme.GOOD}'>✓ Copied.</span> "
+                                    "Click Discord's message box and press Ctrl+V.")
 
     def _on_failed(self, msg):
         src = self._job_over()
         self.status.emit("Compressing failed: " + msg.splitlines()[-1] if msg else "Compressing failed")
         if self.clip and self.clip.path == src:
             self.export_stack.setCurrentIndex(0)
-            self.plan_label.setText(f"<span style='color:#ed4245'>Compressing failed: {msg.splitlines()[-1] if msg else ''}</span>")
+            self._plan_text(f"Compressing failed: {msg.splitlines()[-1] if msg else ''}", bad=True)
         self._update_plan_soon()
 
     def _on_cancelled(self):

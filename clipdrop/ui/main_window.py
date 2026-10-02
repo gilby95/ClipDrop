@@ -2,20 +2,70 @@ import os
 import subprocess
 import time
 
-from PySide6.QtCore import QByteArray, QEvent, QObject, Qt, QTimer
-from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QComboBox, QFileDialog, QHBoxLayout, QLabel,
-                               QLineEdit, QListView, QListWidget, QListWidgetItem, QMainWindow, QMenu,
-                               QMessageBox, QPushButton, QSplitter, QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtCore import QByteArray, QEvent, QObject, QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QComboBox, QFileDialog, QFrame, QHBoxLayout,
+                               QLabel, QLineEdit, QListView, QListWidget, QListWidgetItem, QMainWindow, QMenu,
+                               QMessageBox, QPushButton, QSizePolicy, QSpacerItem, QSplitter, QStackedWidget, QStyle,
+                               QStyledItemDelegate,
+                               QVBoxLayout, QWidget)
 
 from ..library import Library, norm
 from ..settings import Settings
+from . import theme
 from .cliplist import ClipDelegate, ClipModel, ClipRole
-from .dialogs import FindFoldersDialog, SettingsDialog
+from .dialogs import FindFoldersDialog, OnboardingDialog, SettingsDialog
 from .editor import EditorPane, copy_file_to_clipboard, gpu_note, show_in_folder
 from .theme import app_icon
 from .update_dialog import UpdateChecker, UpdateDialog
 
 SORTS = [("Newest first", "newest"), ("Oldest first", "oldest"), ("Name", "name"), ("Biggest", "size")]
+
+
+class FolderDelegate(QStyledItemDelegate):
+    """Sidebar folder row: icon, name, count on the right; missing folders in red."""
+    COUNT = Qt.UserRole + 1
+    MISSING = Qt.UserRole + 2
+
+    def sizeHint(self, option, index):
+        return QSize(180, 36)
+
+    def paint(self, p, opt, index):
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(opt.rect).adjusted(0, 1, 0, -1)
+        selected = bool(opt.state & QStyle.State_Selected)
+        if selected or opt.state & QStyle.State_MouseOver:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(theme.SURFACE_HI if selected else theme.SURFACE))
+            p.drawRoundedRect(r, 8, 8)
+        is_all = index.data(Qt.UserRole) is None
+        missing = bool(index.data(self.MISSING))
+        name = "grid" if is_all else ("folder-alert" if missing else "folder")
+        color = theme.BAD if missing else (theme.ACCENT if selected else theme.MUTED)
+        p.drawPixmap(QPointF(r.left() + 10, r.center().y() - 8), theme.icon_pixmap(name, color, 16))
+        count = str(index.data(self.COUNT) or 0)
+        f = theme.mono(12)
+        p.setFont(f)
+        cw = QFontMetrics(f).horizontalAdvance(count)
+        p.setPen(QColor(theme.TEXT if selected else theme.FAINT))
+        p.drawText(QRectF(r.right() - 10 - cw, r.top(), cw + 2, r.height()), Qt.AlignVCenter | Qt.AlignLeft, count)
+        f = theme.ui(13, QFont.DemiBold if selected else QFont.Normal)
+        p.setFont(f)
+        fm = QFontMetrics(f)
+        x = r.left() + 36
+        avail = r.right() - 18 - cw - x
+        text = index.data(Qt.DisplayRole)
+        suffix = "  (missing)" if missing else ""
+        p.setPen(QColor(theme.MUTED if missing else (theme.TEXT if selected else "#d4d7dc")))
+        shown = fm.elidedText(text, Qt.ElideMiddle, int(avail - fm.horizontalAdvance(suffix)))
+        p.drawText(QRectF(x, r.top(), avail, r.height()), Qt.AlignVCenter | Qt.AlignLeft, shown)
+        if missing:
+            p.setPen(QColor(theme.BAD))
+            p.setFont(theme.ui(12))
+            p.drawText(QRectF(x + fm.horizontalAdvance(shown), r.top(), avail, r.height()),
+                       Qt.AlignVCenter | Qt.AlignLeft, suffix)
+        p.restore()
 
 
 class KeyFilter(QObject):
@@ -75,11 +125,12 @@ class MainWindow(QMainWindow):
         self.editor.status.connect(lambda s: self.statusBar().showMessage(s, 8000))
         self.editor.exported.connect(self.model.clip_changed)
         self.editor.wantChannels.connect(self._need_channels)
+        self.editor.jobProgress.connect(self._on_job_progress)
         split.addWidget(self.editor)
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 0)
         split.setStretchFactor(2, 1)
-        split.setSizes([220, 380, 900])
+        split.setSizes([220, 360, 920])
         self.split = split
         self.setCentralWidget(split)
         self.statusBar().showMessage(gpu_note(), 6000)
@@ -105,7 +156,7 @@ class MainWindow(QMainWindow):
         self.library.start()
         QTimer.singleShot(0, self.view.setFocus)
         if not self.settings["folders"]:
-            QTimer.singleShot(400, self.find_folders)
+            QTimer.singleShot(400, self.onboard)
 
         self._update_info = None
         self.updater = UpdateChecker(self)
@@ -119,45 +170,89 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self):
         w = QWidget()
         w.setObjectName("Sidebar")
-        w.setMinimumWidth(190)
+        w.setAttribute(Qt.WA_StyledBackground)
+        w.setMinimumWidth(200)
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(10, 14, 10, 10)
-        lay.setSpacing(8)
+        lay.setContentsMargins(12, 18, 12, 10)
+        lay.setSpacing(6)
+        brand = QHBoxLayout()
+        brand.setContentsMargins(4, 0, 0, 0)
+        brand.setSpacing(9)
+        logo = QLabel()
+        logo.setPixmap(theme.logo_label_pixmap(32))
+        logo.setFixedSize(32, 32)
+        brand.addWidget(logo)
+        col = QVBoxLayout()
+        col.setSpacing(1)
         title = QLabel("ClipDrop")
         title.setObjectName("AppTitle")
-        lay.addWidget(title)
+        col.addWidget(title)
         sub = QLabel("Clips → Discord, sized right.")
-        sub.setObjectName("Muted")
-        lay.addWidget(sub)
-        lay.addSpacing(10)
+        sub.setObjectName("Tagline")
+        col.addWidget(sub)
+        brand.addLayout(col, 1)
+        lay.addLayout(brand)
+        lay.addSpacing(22)
         sec = QLabel("FOLDERS")
         sec.setObjectName("Section")
+        sec.setContentsMargins(10, 0, 0, 2)
         lay.addWidget(sec)
         self.folder_list = QListWidget()
+        self.folder_list.setItemDelegate(FolderDelegate(self.folder_list))
+        self.folder_list.setMouseTracking(True)
+        self.folder_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.folder_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.folder_list.customContextMenuRequested.connect(self._folder_menu)
         self.folder_list.currentItemChanged.connect(self._on_folder_pick)
         self.folder_list.setFocusPolicy(Qt.NoFocus)
         lay.addWidget(self.folder_list, 1)
+        self.no_folders = QLabel("No folders yet. Add the one your capture app saves to.")
+        self.no_folders.setObjectName("Faint")
+        self.no_folders.setWordWrap(True)
+        self.no_folders.setContentsMargins(10, 0, 6, 0)
+        lay.addWidget(self.no_folders)
+        self._side_stretch = QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Minimum)
+        lay.addItem(self._side_stretch)
         self.update_btn = QPushButton("")
         self.update_btn.setObjectName("Primary")
+        self.update_btn.setIcon(theme.icon("update", theme.ON_ACCENT, width=2.2))
+        self.update_btn.setMinimumHeight(36)
         self.update_btn.clicked.connect(self._open_update)
         self.update_btn.setFocusPolicy(Qt.NoFocus)
         self.update_btn.hide()
         lay.addWidget(self.update_btn)
-        add = QPushButton("+  Add folder")
+        lay.addSpacing(2)
+        add = QPushButton(" Add folder")
+        add.setIcon(theme.icon("plus"))
+        add.setStyleSheet("text-align: left; padding-left: 12px;")
         add.clicked.connect(self.add_folder)
-        find = QPushButton("Find my clip folders")
+        find = QPushButton(" Find my clip folders")
+        find.setObjectName("SideNav")
+        find.setIcon(theme.icon("find", theme.TEXT_2))
         find.clicked.connect(self.find_folders)
         lay.addWidget(add)
         lay.addWidget(find)
-        lay.addSpacing(6)
-        settings = QPushButton("Settings")
-        settings.setObjectName("Flat")
+        line = QFrame()
+        line.setObjectName("Hairline")
+        lay.addSpacing(4)
+        lay.addWidget(line)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 2, 6, 0)
+        settings = QPushButton(" Settings")
+        settings.setObjectName("SideNav")
+        settings.setIcon(theme.icon("settings", theme.TEXT_2))
         settings.clicked.connect(self.open_settings)
-        lay.addWidget(settings, 0, Qt.AlignLeft)
+        row.addWidget(settings, 1)
+        from .. import __version__
+        ver = QLabel(__version__)
+        ver.setObjectName("Mono")
+        ver.setStyleSheet(f"color: {theme.FAINT}; font-size: 11px;")
+        row.addWidget(ver)
+        lay.addLayout(row)
         for b in (add, find, settings):
             b.setFocusPolicy(Qt.NoFocus)
+            b.setIconSize(theme.ICON_SIZE)
+            b.setMinimumHeight(34)
         return w
 
     def _refresh_folders(self):
@@ -167,21 +262,29 @@ class MainWindow(QMainWindow):
         counts = {}
         for c in self.library.clips.values():
             counts[norm(c.root)] = counts.get(norm(c.root), 0) + 1
-        all_item = QListWidgetItem(f"All clips   {len(self.library.clips)}")
+        all_item = QListWidgetItem("All clips")
         all_item.setData(Qt.UserRole, None)
+        all_item.setData(FolderDelegate.COUNT, len(self.library.clips))
         self.folder_list.addItem(all_item)
         select = all_item
         for f in self.settings["folders"]:
             name = os.path.basename(os.path.normpath(f)) or f
-            missing = "" if os.path.isdir(f) else "  (missing)"
-            it = QListWidgetItem(f"{name}   {counts.get(norm(f), 0)}{missing}")
+            it = QListWidgetItem(name)
             it.setToolTip(f)
             it.setData(Qt.UserRole, f)
+            it.setData(FolderDelegate.COUNT, counts.get(norm(f), 0))
+            it.setData(FolderDelegate.MISSING, not os.path.isdir(f))
             self.folder_list.addItem(it)
             if current and norm(current) == norm(f):
                 select = it
         self.folder_list.setCurrentItem(select)
         self.folder_list.blockSignals(False)
+        empty = not self.settings["folders"]
+        self.no_folders.setVisible(empty)
+        self.folder_list.setMaximumHeight(40 if empty else 16777215)
+        self._side_stretch.changeSize(0, 0, QSizePolicy.Minimum,
+                                      QSizePolicy.Expanding if empty else QSizePolicy.Minimum)
+        self.folder_list.parentWidget().layout().invalidate()
 
     def _on_folder_pick(self, item, _prev):
         self.model.folder = item.data(Qt.UserRole) if item else None
@@ -193,14 +296,21 @@ class MainWindow(QMainWindow):
             return
         path = item.data(Qt.UserRole)
         m = QMenu(self)
-        m.addAction("Open in Explorer", lambda: os.path.isdir(path) and os.startfile(path))
-        m.addAction("Stop watching this folder", lambda: self.remove_folder(path))
+        m.addAction(theme.icon("folder", theme.MUTED), "Open in Explorer",
+                    lambda: os.path.isdir(path) and os.startfile(path))
+        m.addAction(theme.icon("close", theme.MUTED), "Stop watching this folder", lambda: self.remove_folder(path))
         m.exec(self.folder_list.mapToGlobal(pos))
 
     def add_folder(self):
         d = QFileDialog.getExistingDirectory(self, "Pick a folder where your clips are saved")
         if d:
             self._add_folders([os.path.normpath(d)])
+
+    def onboard(self):
+        dlg = OnboardingDialog(self.settings, self)
+        if dlg.exec():
+            self.editor.size_combo.setCurrentIndex(max(0, self.editor.size_combo.findData(self.settings["size_preset"])))
+            self._add_folders(dlg.selected())
 
     def find_folders(self):
         dlg = FindFoldersDialog(self.settings["folders"], self)
@@ -252,14 +362,17 @@ class MainWindow(QMainWindow):
     def _build_browser(self):
         w = QWidget()
         w.setObjectName("Browser")
-        w.setMinimumWidth(320)
+        w.setAttribute(Qt.WA_StyledBackground)
+        w.setMinimumWidth(340)
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(6, 12, 6, 6)
-        lay.setSpacing(8)
+        lay.setContentsMargins(0, 14, 0, 6)
+        lay.setSpacing(6)
         top = QHBoxLayout()
-        top.setContentsMargins(6, 0, 6, 0)
+        top.setContentsMargins(14, 0, 14, 0)
+        top.setSpacing(8)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search clips")
+        self.search.addAction(theme.icon("search", theme.FAINT, 15), QLineEdit.LeadingPosition)
         self.search.setClearButtonEnabled(True)
         self.search.setFocusPolicy(Qt.ClickFocus)
         self.search.textChanged.connect(self._on_search)
@@ -289,7 +402,13 @@ class MainWindow(QMainWindow):
 
         self.empty = QWidget()
         el = QVBoxLayout(self.empty)
+        el.setContentsMargins(34, 0, 34, 50)
+        el.setSpacing(0)
         el.addStretch()
+        self.empty_icon = QLabel()
+        self.empty_icon.setAlignment(Qt.AlignCenter)
+        el.addWidget(self.empty_icon, 0, Qt.AlignHCenter)
+        el.addSpacing(16)
         self.empty_title = QLabel("")
         self.empty_title.setObjectName("Big")
         self.empty_title.setAlignment(Qt.AlignCenter)
@@ -297,13 +416,26 @@ class MainWindow(QMainWindow):
         self.empty_hint.setObjectName("Muted")
         self.empty_hint.setAlignment(Qt.AlignCenter)
         self.empty_hint.setWordWrap(True)
-        self.empty_btn = QPushButton("Find my clip folders")
+        self.empty_btn = QPushButton(" Find my clip folders")
         self.empty_btn.setObjectName("Primary")
+        self.empty_btn.setIcon(theme.icon("find", theme.ON_ACCENT, width=2.2))
+        self.empty_btn.setIconSize(theme.ICON_SIZE)
         self.empty_btn.clicked.connect(self.find_folders)
+        self.empty_link = QPushButton("Or pick a folder yourself")
+        self.empty_link.setObjectName("Link")
+        self.empty_link.clicked.connect(self.add_folder)
+        self.empty_clear = QPushButton("Clear search")
+        self.empty_clear.setObjectName("Link")
+        self.empty_clear.clicked.connect(self.search.clear)
         el.addWidget(self.empty_title)
-        el.addWidget(self.empty_hint)
         el.addSpacing(8)
-        el.addWidget(self.empty_btn, 0, Qt.AlignCenter)
+        el.addWidget(self.empty_hint)
+        el.addSpacing(18)
+        for b in (self.empty_btn, self.empty_link, self.empty_clear):
+            b.setFocusPolicy(Qt.NoFocus)
+            b.setCursor(Qt.PointingHandCursor)
+            el.addWidget(b, 0, Qt.AlignCenter)
+        el.addSpacing(4)
         el.addStretch()
 
         self.list_stack = QStackedWidget()
@@ -312,18 +444,41 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.list_stack, 1)
         return w
 
+    def _empty_tile(self, name, lime):
+        size, dpr = 64 if lime else 52, 2.0
+        pm = QPixmap(int(size * dpr), int(size * dpr))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(theme.ACCENT_LINE if lime else theme.BORDER), 1))
+        p.setBrush(QColor(theme.ACCENT_SOFT if lime else theme.SURFACE))
+        p.drawRoundedRect(QRectF(0.5, 0.5, size - 1, size - 1), 16 if lime else 13, 16 if lime else 13)
+        ic = 30 if lime else 22
+        p.drawPixmap(QPointF((size - ic) / 2, (size - ic) / 2),
+                     theme.icon_pixmap(name, theme.ACCENT if lime else theme.MUTED, ic, 1.8))
+        p.end()
+        self.empty_icon.setPixmap(pm)
+
     def _sync_empty(self):
+        searching = bool(self.search.text())
         if not self.settings["folders"]:
+            self._empty_tile("find", True)
             self.empty_title.setText("Where do your clips go?")
-            self.empty_hint.setText("Point ClipDrop at the folders your capture app saves to "
-                                    "(OBS, ShadowPlay, Medal…). New clips show up here on their own.")
+            self.empty_hint.setText("ClipDrop watches the folders your recording app saves to (OBS, NVIDIA, Medal, "
+                                    "Xbox Game Bar, AMD) and puts every clip in one list.")
             self.empty_btn.show()
+            self.empty_link.show()
+            self.empty_clear.hide()
             self.list_stack.setCurrentIndex(1)
         elif not self.model.clips():
-            self.empty_title.setText("No clips here yet" if not self.search.text() else "No matches")
-            self.empty_hint.setText("New recordings appear here as soon as they're saved."
-                                    if not self.search.text() else "")
+            self._empty_tile("search" if searching else "video", False)
+            self.empty_title.setText("No matches" if searching else "No clips here yet")
+            self.empty_hint.setText(f"Nothing called “{self.search.text()}”." if searching else
+                                    "Go save a clip. It'll pop up here right away.")
             self.empty_btn.hide()
+            self.empty_link.hide()
+            self.empty_clear.setVisible(searching)
             self.list_stack.setCurrentIndex(1)
         else:
             self.list_stack.setCurrentIndex(0)
@@ -359,6 +514,13 @@ class MainWindow(QMainWindow):
             clip = self.library.clips.get(path)
             self.editor.load(clip, self.model.pixmap(clip))
 
+    def _on_job_progress(self, path, frac):
+        if frac < 0:
+            self.model.progress.pop(path, None)
+        else:
+            self.model.progress[path] = frac
+        self.model.clip_changed(path)
+
     def _on_clip_arrived(self, path):
         self.statusBar().showMessage(f"New clip: {os.path.basename(path)}", 10000)
 
@@ -377,12 +539,14 @@ class MainWindow(QMainWindow):
         e = self.settings.export_for(clip.path)
         m = QMenu(self)
         if e:
-            m.addAction("Copy compressed clip (Ctrl+V in Discord)", lambda: copy_file_to_clipboard(e["path"]))
-            m.addAction("Show compressed clip", lambda: show_in_folder(e["path"]))
-            m.addAction("Delete compressed copy", lambda: self._delete_export(clip.path, e["path"]))
+            m.addAction(theme.icon("copy"), "Copy compressed clip (Ctrl+V in Discord)",
+                        lambda: copy_file_to_clipboard(e["path"]))
+            m.addAction(theme.icon("folder", theme.MUTED), "Show compressed clip", lambda: show_in_folder(e["path"]))
+            m.addAction(theme.icon("close", theme.BAD), "Delete compressed copy",
+                        lambda: self._delete_export(clip.path, e["path"]))
             m.addSeparator()
-        m.addAction("Copy original file", lambda: copy_file_to_clipboard(clip.path))
-        m.addAction("Show original in folder", lambda: show_in_folder(clip.path))
+        m.addAction(theme.icon("copy", theme.MUTED), "Copy original file", lambda: copy_file_to_clipboard(clip.path))
+        m.addAction(theme.icon("folder", theme.MUTED), "Show original in folder", lambda: show_in_folder(clip.path))
         m.exec(self.view.viewport().mapToGlobal(pos))
 
     def _delete_export(self, src, path):
