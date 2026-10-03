@@ -585,12 +585,12 @@ class SettingsDialog(QDialog):
         for ch in bundled_channels():
             if ch["url"] in mine:
                 continue
-            it = QListWidgetItem(f"#  {ch['name']}      came with ClipDrop")
+            it = QListWidgetItem(f"#  {ch['name']}   ·  up to {ch.get('limit_mb', 20):g} MB      came with ClipDrop")
             it.setFlags(it.flags() & ~Qt.ItemIsSelectable)
             it.setToolTip("Built into this install, so it can't be removed")
             self.channel_list.addItem(it)
         for ch in self._channels:
-            it = QListWidgetItem(f"#  {ch['name']}")
+            it = QListWidgetItem(f"#  {ch['name']}   ·  up to {float(ch.get('limit_mb') or 20):g} MB")
             it.setData(Qt.UserRole, ch["url"])
             self.channel_list.addItem(it)
         if not self.channel_list.count():

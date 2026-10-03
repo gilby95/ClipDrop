@@ -893,10 +893,10 @@ class EditorPane(QWidget):
 
     # Exporting ----------------------------------------------------------------
 
-    def _out_path(self):
+    def _out_path(self, limit_mb=None):
         stem = os.path.splitext(self.clip.name)[0]
         stem = re.sub(r'[<>:"/\\|?*]+', "_", stem)
-        tag = f"{self.settings.limit_mb():g}MB"
+        tag = f"{limit_mb or self.settings.limit_mb():g}MB"
         if self.a > 0 or self.b < self.timeline.dur - 50:
             s = int(self.a / 1000)
             stem += f"_{s // 60:02d}m{s % 60:02d}s"
@@ -1021,7 +1021,14 @@ class EditorPane(QWidget):
         if not ask_name(self.settings, self):
             return
         src = self.clip.path if self.clip else self.drop.path
-        dlg = ShareDialog(self.settings, src, self.drop.path, os.path.getsize(self.drop.path), self.thumb_pix, self)
+        shrink = None
+        if self.clip and self.clip.info:       # lets Share make a smaller copy if the channel's limit is lower
+            shrink = dict(src=self.clip.path, start=self.a / 1000, end=self.b / 1000, info=dict(self.clip.info),
+                          out_for=self._out_path,
+                          opts=dict(resolution=self.settings["resolution"], fps_pref=self.settings["fps"],
+                                    mix_audio=self.settings["mix_audio"], encoder=self.settings["encoder"]))
+        dlg = ShareDialog(self.settings, src, self.drop.path, os.path.getsize(self.drop.path), self.thumb_pix, self,
+                          shrink=shrink)
         dlg.shared.connect(lambda ch: (self.ready_info.setText(
             f"<span style='color:{theme.GOOD}; font-weight:600'>Posted to #{ch} ✓</span>"),
             self.status.emit(f"Posted to #{ch}"), self.sharedClip.emit(src)))

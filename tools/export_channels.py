@@ -14,7 +14,7 @@ channels, seen = [], set()
 def take(items):
     for c in items or []:
         if c.get("url") and c.get("name") and c["url"] not in seen:
-            channels.append({"name": c["name"], "url": c["url"]})
+            channels.append({"name": c["name"], "url": c["url"], "limit_mb": c.get("limit_mb", 20)})
             seen.add(c["url"])
 
 

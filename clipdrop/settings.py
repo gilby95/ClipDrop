@@ -13,6 +13,10 @@ SIZE_PRESETS = [
     ("custom", "Custom size...", None),
 ]
 
+# Posts made through a webhook follow the server's limit (its boost level), never anyone's Nitro.
+CHANNEL_MB = 20
+BOOST_LIMITS = [("No boost / level 1", 20), ("Level 2 boost", 50), ("Level 3 boost", 100)]
+
 DEFAULTS = {
     "folders": [],
     "recursive": True,
@@ -111,7 +115,8 @@ class Settings:
             seen.add(ch["url"])
         for ch in self.data["channels"]:
             if ch.get("url") and ch["url"] not in seen:
-                out.append({"name": ch["name"], "url": ch["url"], "bundled": False})
+                out.append({"name": ch["name"], "url": ch["url"], "bundled": False,
+                            "limit_mb": float(ch.get("limit_mb") or CHANNEL_MB)})
                 seen.add(ch["url"])
         return out
 
@@ -120,6 +125,7 @@ def bundled_channels():
     try:
         with open(app_root() / "share.json", encoding="utf-8") as f:
             data = json.load(f)
-        return [{"name": c["name"], "url": c["url"]} for c in data.get("channels", []) if c.get("url")]
+        return [{"name": c["name"], "url": c["url"], "limit_mb": float(c.get("limit_mb") or CHANNEL_MB)}
+                for c in data.get("channels", []) if c.get("url")]
     except (OSError, ValueError, KeyError, TypeError):
         return []

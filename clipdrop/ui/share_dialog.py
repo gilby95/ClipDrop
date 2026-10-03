@@ -7,8 +7,9 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QComboBox, QDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox,
                                QProgressBar, QPushButton, QVBoxLayout)
 
-from .. import share
-from ..media import fmt_size
+from .. import compress, share
+from ..media import fmt_size, fmt_time
+from ..settings import BOOST_LIMITS
 from . import theme
 from .dialogs import Shell, button, label
 
@@ -35,6 +36,7 @@ def ask_name(settings, parent, first_time=True):
 
 class _Bridge(QObject):
     progress = Signal(float)
+    stage = Signal(str)
     done = Signal(object)
     failed = Signal(str, bool)
     cancelled = Signal()
@@ -43,9 +45,11 @@ class _Bridge(QObject):
 class ShareDialog(QDialog):
     shared = Signal(str)        # channel name
 
-    def __init__(self, settings, src, path, size, pixmap=None, parent=None):
+    def __init__(self, settings, src, path, size, pixmap=None, parent=None, shrink=None):
         super().__init__(parent)
-        self.settings, self.src, self.path = settings, src, path
+        self.settings, self.src, self.path, self.size = settings, src, path, size
+        self.shrink = shrink            # what's needed to make a smaller copy for a channel with a lower limit
+        self._need_shrink = False
         self.setWindowTitle("Share to Discord")
         self._cancel = None
         self._sent = False
@@ -130,25 +134,53 @@ class ShareDialog(QDialog):
 
         self.bridge = _Bridge()
         self.bridge.progress.connect(lambda f: self.progress.setValue(int(f * 1000)))
+        self.bridge.stage.connect(self.progress_label.setText)
         self.bridge.done.connect(self._on_done)
         self.bridge.failed.connect(self._on_failed)
         self.bridge.cancelled.connect(self._on_cancelled)
-        self.channel.currentIndexChanged.connect(self._warn_repost)
-        self._warn_repost()
+        self.channel.currentIndexChanged.connect(self._sync_channel)
+        self._sync_channel()
         self.message.setFocus()
 
-    def _warn_repost(self, *_):
-        """Heads-up when this clip already went to the chosen channel."""
+    def _sync_channel(self, *_):
+        """Checks the clip against the channel's upload limit and whether it was posted there before."""
         ch = self.channel.currentData()
         if not ch:
             return
         from .cliplist import when
+        limit = float(ch.get("limit_mb") or 20)
+        notes, kind = [], "info"
+        self._need_shrink = self.size > limit * 1_000_000
+        blocked = False
+        if self._need_shrink:
+            if not self.shrink:
+                notes.append(f"This clip is {fmt_size(self.size)}, but #{ch['name']} only takes {limit:g} MB. "
+                             "Compress it at a smaller size first, or drag it into Discord yourself.")
+                kind, blocked = "bad", True
+            else:
+                sh = self.shrink
+                try:
+                    compress.make_plan(sh["info"], sh["end"] - sh["start"], limit, sh["opts"]["resolution"],
+                                       sh["opts"]["fps_pref"], has_audio=sh["info"].get("audio_tracks", 0) > 0)
+                    notes.append(f"This clip is {fmt_size(self.size)}, but posts to #{ch['name']} can only be "
+                                 f"{limit:g} MB (that's the server's limit; Nitro only counts when you upload "
+                                 f"yourself). ClipDrop will make a {limit:g} MB copy and send that. "
+                                 "Your bigger version stays, so you can still drag it in yourself.")
+                    kind = "warn"
+                except compress.TooLong as e:
+                    notes.append(f"Too long to post in #{ch['name']} even at {limit:g} MB. Trim it to under "
+                                 f"{fmt_time(e.max_seconds, 0)}, or drag the big version into Discord yourself.")
+                    kind, blocked = "bad", True
         before = [x for x in self.settings.shares_for(self.src) if x["channel"] == ch["name"]]
         if before:
             t = when(before[-1]["time"]).replace("Today", "today").replace("Yesterday", "yesterday")
-            self._banner(f"You already posted this clip to #{ch['name']} {t}. Send it again?", "warn")
-        elif self.status.property("kind") == "warn":
-            self._banner("")
+            notes.append(f"You already posted this clip to #{ch['name']} {t}. Send it again?")
+            kind = "bad" if kind == "bad" else "warn"
+        self._banner("<br><br>".join(notes), kind if notes else None)
+        if not self._sent and not self._cancel:
+            self.send_btn.setEnabled(not blocked)
+            self.send_btn.setText(f"Make {limit:g} MB copy & send" if self._need_shrink and not blocked else "Send")
+            self.send_btn.setMinimumWidth(110)
 
     def _sync_name(self):
         self.as_label.setText(f"Posting as <b style='color:{theme.TEXT}'>{self.settings['display_name']}</b>  ·")
@@ -184,13 +216,27 @@ class ShareDialog(QDialog):
         cancel, bridge, path = self._cancel, self.bridge, self.path
         username = f"{self.settings['display_name']} via ClipDrop"
         content = self.message.text().strip()
+        limit = float(ch.get("limit_mb") or 20)
+        sh = self.shrink if self._need_shrink else None
+        if sh:
+            self.progress_label.setText(f"Making a {limit:g} MB copy for #{ch['name']}…")
 
         def job():
             try:
-                bridge.done.emit(share.post_clip(ch["url"], path, username=username, content=content,
-                                                 on_progress=bridge.progress.emit, cancel=cancel))
-            except share.Cancelled:
+                post_path, lo = path, 0.0
+                if sh:          # the channel takes less than this file: make a copy that fits, then post that
+                    out = sh["out_for"](limit)
+                    r = compress.compress(sh["src"], out, sh["start"], sh["end"], sh["info"], limit, cancel=cancel,
+                                          on_progress=lambda f, _s: bridge.progress.emit(f * 0.6), **sh["opts"])
+                    post_path, lo = r["path"], 0.6
+                    bridge.stage.emit(f"Uploading to #{ch['name']}…")
+                bridge.done.emit(share.post_clip(ch["url"], post_path, username=username, content=content,
+                                                 on_progress=lambda f: bridge.progress.emit(lo + f * (1 - lo)),
+                                                 cancel=cancel))
+            except (share.Cancelled, compress.Cancelled):
                 bridge.cancelled.emit()
+            except compress.TooLong as e:
+                bridge.failed.emit(str(e), True)
             except share.ShareError as e:
                 bridge.failed.emit(str(e), e.too_big)
             except Exception as e:
@@ -213,7 +259,8 @@ class ShareDialog(QDialog):
         self._reset_controls()
         self._sent = True
         self.settings.remember_share(self.src, ch["name"])
-        self._banner(f"✓  Posted to #{ch['name']}", "good")
+        copy = f"the {float(ch.get('limit_mb') or 20):g} MB copy " if self._need_shrink else ""
+        self._banner(f"✓  Posted {copy}to #{ch['name']}", "good")
         self.send_btn.setText("Done")
         self.send_btn.setIcon(QIcon())
         self.close_btn.hide()
@@ -223,11 +270,13 @@ class ShareDialog(QDialog):
 
     def _on_failed(self, msg, _too_big):
         self._reset_controls()
+        self._sync_channel()
         self.send_btn.setText("Try again")
         self._banner(msg, "warn" if "rate limit" in msg.lower() or "busy" in msg.lower() else "bad")
 
     def _on_cancelled(self):
         self._reset_controls()
+        self._sync_channel()
         self._banner("Cancelled.")
         if self._closing:
             self.reject()
@@ -275,6 +324,15 @@ class AddChannelDialog(QDialog):
         self.url.setMinimumHeight(36)
         self.url.setStyleSheet(f"font-family: '{theme.MONO_FONT}'; font-size: 12px;")
         lay.addWidget(self.url)
+        lay.addSpacing(8)
+        lay.addWidget(label("Server boost level <span style='color:#80868f'>(sets how big posts can be)</span>", "Muted"))
+        self.boost = QComboBox()
+        self.boost.setMinimumHeight(36)
+        for text, mb in BOOST_LIMITS:
+            self.boost.addItem(f"{text}  ·  {mb} MB", mb)
+        self.boost.setToolTip("Posts from ClipDrop use the server's upload limit, not anyone's Nitro.\n"
+                              "Check Server Settings → Server Boost to see your level.")
+        lay.addWidget(self.boost)
         lay.addSpacing(6)
         self.status = label("", wrap=True)
         lay.addWidget(self.status)
@@ -316,7 +374,7 @@ class AddChannelDialog(QDialog):
             self._say(str(e), True, self.url)
             return
         self.ok.setEnabled(True)
-        self.result_channel = {"name": name, "url": url}
+        self.result_channel = {"name": name, "url": url, "limit_mb": self.boost.currentData()}
         self.accept()
 
 
