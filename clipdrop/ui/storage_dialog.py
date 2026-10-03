@@ -4,7 +4,7 @@ import os
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFontMetrics
-from PySide6.QtWidgets import (QAbstractItemView, QDialog, QFileDialog, QHBoxLayout, QHeaderView, QMessageBox,
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QFileDialog, QHBoxLayout, QHeaderView, QMessageBox,
                                QStackedWidget, QTreeWidget, QTreeWidgetItem)
 
 from .. import storage
@@ -63,8 +63,20 @@ class StorageDialog(QDialog):
         row.addWidget(change_btn)
         body.addLayout(row)
 
+        top = QHBoxLayout()
         self.summary = label("", "Big")
-        body.addWidget(self.summary)
+        top.addWidget(self.summary, 1)
+        top.addWidget(label("Auto-delete clips older than", "Muted"))
+        self.auto = QComboBox()
+        for text, days in (("Never", 0), ("7 days", 7), ("14 days", 14), ("30 days", 30), ("60 days", 60),
+                           ("90 days", 90)):
+            self.auto.addItem(text, days)
+        self.auto.setCurrentIndex(max(0, self.auto.findData(int(settings.get("cleanup_days", 30) or 0))))
+        self.auto.setToolTip("Old compressed copies go to the Recycle Bin automatically.\n"
+                             "Your original recordings are never touched.")
+        self.auto.currentIndexChanged.connect(lambda _i: self.settings.__setitem__("cleanup_days", self.auto.currentData()))
+        top.addWidget(self.auto)
+        body.addLayout(top)
 
         self.stack = QStackedWidget()
         self.tree = QTreeWidget()

@@ -273,6 +273,18 @@ class ClipDelegate(QStyledItemDelegate):
                 src = QRectF((src.width() - sw) / 2, (src.height() - sh) / 2, sw, sh)
                 p.drawPixmap(tr, pm, src)
             p.setClipping(False)
+            if self.settings.shares_for(clip.path):          # "Posted" badge, top-left of the thumbnail
+                f = theme.ui(10, QFont.Bold)
+                p.setFont(f)
+                txt = "Posted"
+                bw = QFontMetrics(f).horizontalAdvance(txt) + 26
+                br = QRectF(tr.left() + 4, tr.top() + 4, bw, 17)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(0, 0, 0, 200))
+                p.drawRoundedRect(br, 8.5, 8.5)
+                p.drawPixmap(QPointF(br.left() + 5, br.top() + 2.5), theme.icon_pixmap("share", theme.ACCENT, 12))
+                p.setPen(QColor(theme.ACCENT))
+                p.drawText(br.adjusted(20, 0, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, txt)
             if clip.info:
                 f = theme.mono(11)
                 p.setFont(f)

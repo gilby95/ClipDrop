@@ -225,6 +225,7 @@ class EditorPane(QWidget):
     exported = Signal(str)          # source path
     status = Signal(str)
     wantChannels = Signal()
+    sharedClip = Signal(str)        # source path that was just posted
     jobProgress = Signal(str, float)  # source path, 0..1 (or -1 when the job ends)
 
     def __init__(self, settings, parent=None):
@@ -659,7 +660,7 @@ class EditorPane(QWidget):
         if self._cancel and self._job_src == clip.path:
             self.export_stack.setCurrentIndex(1)
         elif self.settings.export_for(clip.path):
-            self._show_ready(self.settings.export_for(clip.path), note="Made earlier.")
+            self._show_ready(self.settings.export_for(clip.path), note="Made earlier. " + self._posted_note(clip.path))
         else:
             self.export_stack.setCurrentIndex(0)
 
@@ -993,6 +994,16 @@ class EditorPane(QWidget):
         self.status.emit(f"Ready: {os.path.basename(r['path'])} ({fmt_size(r['size'])})")
         self._update_plan()
 
+    def _posted_note(self, src):
+        shares = self.settings.shares_for(src)
+        if not shares:
+            return ""
+        from .cliplist import when
+        last = shares[-1]
+        more = f" ({len(shares)} times)" if len(shares) > 1 else ""
+        return (f"<span style='color:{theme.GOOD}'>Posted to #{last['channel']} "
+                f"{when(last['time']).replace('Today', 'today').replace('Yesterday', 'yesterday')}{more}.</span>")
+
     def _show_ready(self, e, note=""):
         self.drop.set_file(e["path"], e["size"], self.thumb_pix)
         self.ready_meter.setValue(int(min(1.0, e["size"] / (e["limit_mb"] * 1e6)) * 1000))
@@ -1013,7 +1024,7 @@ class EditorPane(QWidget):
         dlg = ShareDialog(self.settings, src, self.drop.path, os.path.getsize(self.drop.path), self.thumb_pix, self)
         dlg.shared.connect(lambda ch: (self.ready_info.setText(
             f"<span style='color:{theme.GOOD}; font-weight:600'>Posted to #{ch} ✓</span>"),
-            self.status.emit(f"Posted to #{ch}")))
+            self.status.emit(f"Posted to #{ch}"), self.sharedClip.emit(src)))
         dlg.exec()
 
     def _copy_ready(self):

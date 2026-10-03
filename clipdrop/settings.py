@@ -34,6 +34,9 @@ DEFAULTS = {
     "channels": [],            # [{"name": "clips", "url": webhook}] added on this PC
     "display_name": "",
     "last_channel": "",
+    "shared": {},              # source clip -> [{"channel", "time"}], kept even after the copy is deleted
+    "cleanup_days": 30,        # auto-delete compressed copies older than this (0 = never)
+    "last_cleanup": 0,
 }
 
 
@@ -86,11 +89,17 @@ class Settings:
             self.save()
 
     def remember_share(self, src, channel):
-        e = self.data["exports"].get(src)
-        if e is not None:
-            e.setdefault("shared", []).append({"channel": channel, "time": time.time()})
+        self.data.setdefault("shared", {}).setdefault(src, []).append({"channel": channel, "time": time.time()})
         self.data["last_channel"] = channel
         self.save()
+
+    def shares_for(self, src):
+        """Every time this clip was posted, oldest first (older versions kept them on the export)."""
+        out = list(self.data.get("shared", {}).get(src, []))
+        e = self.data["exports"].get(src)
+        if e:
+            out += e.get("shared", [])
+        return sorted(out, key=lambda s: s["time"])
 
     # Discord channels ------------------------------------------------------
 

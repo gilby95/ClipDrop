@@ -133,7 +133,22 @@ class ShareDialog(QDialog):
         self.bridge.done.connect(self._on_done)
         self.bridge.failed.connect(self._on_failed)
         self.bridge.cancelled.connect(self._on_cancelled)
+        self.channel.currentIndexChanged.connect(self._warn_repost)
+        self._warn_repost()
         self.message.setFocus()
+
+    def _warn_repost(self, *_):
+        """Heads-up when this clip already went to the chosen channel."""
+        ch = self.channel.currentData()
+        if not ch:
+            return
+        from .cliplist import when
+        before = [x for x in self.settings.shares_for(self.src) if x["channel"] == ch["name"]]
+        if before:
+            t = when(before[-1]["time"]).replace("Today", "today").replace("Yesterday", "yesterday")
+            self._banner(f"You already posted this clip to #{ch['name']} {t}. Send it again?", "warn")
+        elif self.status.property("kind") == "warn":
+            self._banner("")
 
     def _sync_name(self):
         self.as_label.setText(f"Posting as <b style='color:{theme.TEXT}'>{self.settings['display_name']}</b>  ·")

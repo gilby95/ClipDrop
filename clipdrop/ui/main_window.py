@@ -128,13 +128,14 @@ class MainWindow(QMainWindow):
         self.editor.status.connect(lambda s: self.statusBar().showMessage(s, 8000))
         self.editor.exported.connect(self.model.clip_changed)
         self.editor.exported.connect(lambda _src: self._refresh_storage())
+        self.editor.sharedClip.connect(self.model.clip_changed)
         self.editor.wantChannels.connect(self._need_channels)
         self.editor.jobProgress.connect(self._on_job_progress)
         split.addWidget(self.editor)
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 0)
         split.setStretchFactor(2, 1)
-        split.setSizes([220, 360, 920])
+        split.setSizes([236, 360, 904])
         self.split = split
         self.setCentralWidget(split)
         self.statusBar().showMessage(gpu_note(), 6000)
@@ -169,6 +170,9 @@ class MainWindow(QMainWindow):
         self._refresh_storage()
         self._storage_timer = QTimer(self, interval=15000, timeout=self._refresh_storage)
         self._storage_timer.start()
+        QTimer.singleShot(8000, self._auto_cleanup)
+        self._cleanup_timer = QTimer(self, interval=3 * 3600 * 1000, timeout=self._auto_cleanup)
+        self._cleanup_timer.start()
         self._update_timer = QTimer(self, interval=6 * 3600 * 1000, timeout=self.updater.check)
         self._update_timer.start()
 
@@ -527,6 +531,19 @@ class MainWindow(QMainWindow):
         self.storage_size.setText(fmt_size(total) if n else "")
         self.storage_btn.setToolTip(f"{n} compressed clip{'s' if n != 1 else ''} in {self.settings['export_dir']}"
                                     "\nClick to open, delete or empty them")
+
+    def _auto_cleanup(self):
+        """Recycles compressed copies older than the chosen number of days (never while compressing)."""
+        days = int(self.settings.get("cleanup_days", 30) or 0)
+        if not days or self.editor.busy():
+            return
+        keep = [self.editor.drop.path] if self.editor.export_stack.currentIndex() == 2 else []
+        n, size = storage.cleanup(self.settings["export_dir"], days, keep)
+        self.settings["last_cleanup"] = time.time()
+        if n:
+            self.statusBar().showMessage(f"Cleaned up {n} compressed clip{'s' if n != 1 else ''} older than "
+                                         f"{days} days ({fmt_size(size)}, in the Recycle Bin)", 12000)
+            self._after_storage_change()
 
     def open_storage(self):
         dlg = StorageDialog(self.settings, busy=self.editor.busy(), parent=self)

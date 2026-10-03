@@ -38,6 +38,20 @@ def usage(folder):
     return sum(f[1] for f in files), len(files)
 
 
+def cleanup(folder, days, keep=()):
+    """Recycles compressed copies older than `days`. Returns (count, bytes) removed."""
+    if not days or days <= 0:
+        return 0, 0
+    cutoff = time.time() - days * 86400
+    keep = {os.path.normcase(os.path.abspath(k)) for k in keep if k}
+    old = [(p, s) for p, s, m in list_exports(folder) if m < cutoff and os.path.normcase(os.path.abspath(p)) not in keep]
+    if not old:
+        return 0, 0
+    failed = set(recycle([p for p, _s in old]))
+    gone = [(p, s) for p, s in old if p not in failed]
+    return len(gone), sum(s for _p, s in gone)
+
+
 def recycle(paths):
     """Moves files to the Recycle Bin (Windows), or deletes them elsewhere. Returns the ones that failed."""
     paths = [os.path.abspath(p) for p in paths if is_ours(os.path.basename(p)) and os.path.exists(p)]
