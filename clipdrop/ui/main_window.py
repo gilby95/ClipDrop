@@ -228,7 +228,7 @@ class MainWindow(QMainWindow):
         self.update_btn.setObjectName("Primary")
         self.update_btn.setIcon(theme.icon("update", theme.ON_ACCENT, width=2.2))
         self.update_btn.setMinimumHeight(36)
-        self.update_btn.clicked.connect(self._open_update)
+        self.update_btn.clicked.connect(lambda: self._open_update())
         self.update_btn.setFocusPolicy(Qt.NoFocus)
         self.update_btn.hide()
         lay.addWidget(self.update_btn)
@@ -366,10 +366,29 @@ class MainWindow(QMainWindow):
         self.update_btn.setText(f"Update to {info['version']}")
         self.update_btn.show()
         self.statusBar().showMessage(f"ClipDrop {info['version']} is available", 15000)
+        if getattr(self, "_prompted_version", None) != info["version"]:     # pop up once per version per launch
+            self._prompted_version = info["version"]
+            QTimer.singleShot(500, self._prompt_update)
 
-    def _open_update(self):
-        if self._update_info:
-            UpdateDialog(self._update_info, busy=self.editor.busy(), parent=self).exec()
+    def _prompt_update(self):
+        """Centered 'new version' popup. Waits while something else is open or a clip is compressing."""
+        from PySide6.QtWidgets import QApplication
+        if not self._update_info:
+            return
+        if QApplication.activeModalWidget() or self.editor.busy() or not self.isVisible() or self.isMinimized():
+            QTimer.singleShot(20000, self._prompt_update)
+            return
+        self._open_update(center=True)
+
+    def _open_update(self, center=False):
+        if not self._update_info:
+            return
+        dlg = UpdateDialog(self._update_info, busy=self.editor.busy(), parent=self)
+        if center:
+            dlg.adjustSize()
+            screen = (self.screen() or dlg.screen()).availableGeometry()
+            dlg.move(screen.center() - dlg.rect().center())
+        dlg.exec()
 
     def _need_channels(self):
         QMessageBox.information(self, "Add a Discord channel",
