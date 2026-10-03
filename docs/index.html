@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClipDrop: clips to Discord, sized right</title>
+<meta name="description" content="Trim your gaming clips, shrink them to fit Discord, and share them in one click. Free for Windows.">
+<meta name="theme-color" content="#b6f23d">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="ClipDrop">
+<meta property="og:title" content="ClipDrop: clips to Discord, sized right">
+<meta property="og:description" content="Trim your gaming clips, shrink them to fit Discord, and share them in one click. Free for Windows.">
+<meta property="og:url" content="https://gilby95.github.io/ClipDrop/">
+<meta property="og:image" content="https://gilby95.github.io/ClipDrop/img/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" href="img/favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0e0f11; --panel: #15171a; --surface: #1d2024; --surface-hi: #262a30;
+    --border: #2a2e34; --border-hi: #3a3f47;
+    --text: #eceef1; --muted: #a1a7b0; --faint: #80868f;
+    --accent: #b6f23d; --accent-hi: #c8f76b; --on-accent: #10140a; --accent-soft: #232b14; --accent-line: #4c6320;
+    --good: #57d98b;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; overflow-x: clip; }
+  body { overflow-x: clip; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 400 17px/1.6 "Geist", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+  @media (min-width: 720px) { .wrap { padding: 0 32px; } }
+
+  /* nav */
+  nav { display: flex; align-items: center; justify-content: space-between; padding: 22px 0; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 20px; text-decoration: none; }
+  .brand img { width: 34px; height: 34px; }
+  .navlink { color: var(--muted); text-decoration: none; font-size: 15px; display: inline-flex; gap: 8px; align-items: center; }
+  .navlink:hover { color: var(--text); }
+
+  /* hero */
+  .hero { position: relative; text-align: center; padding: 56px 0 40px; }
+  .hero::before {
+    content: ""; position: absolute; inset: -80px -40% auto; height: 520px; z-index: -1;
+    background: radial-gradient(closest-side, rgba(182, 242, 61, .16), transparent 70%);
+  }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 99px;
+    background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent);
+    font: 500 13px "Geist Mono", ui-monospace, monospace; letter-spacing: .02em;
+  }
+  h1 { font-size: clamp(38px, 7vw, 68px); line-height: 1.04; letter-spacing: -.035em; margin: 22px auto 18px; max-width: 14ch; font-weight: 800; }
+  h1 em { font-style: normal; color: var(--accent); }
+  .lede { color: var(--muted); font-size: clamp(17px, 2.2vw, 20px); max-width: 36em; margin: 0 auto 34px; }
+  .cta { display: inline-flex; flex-direction: column; align-items: center; gap: 12px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 12px; justify-content: center;
+    padding: 18px 34px; border-radius: 14px; background: var(--accent); color: var(--on-accent);
+    font-weight: 700; font-size: 19px; text-decoration: none;
+    box-shadow: 0 10px 40px -10px rgba(182, 242, 61, .55);
+    transition: transform .12s ease, background .12s ease;
+  }
+  .btn:hover { background: var(--accent-hi); transform: translateY(-1px); }
+  .btn:active { transform: translateY(1px); }
+  .btn svg { width: 22px; height: 22px; }
+  .meta { color: var(--faint); font-size: 14px; }
+  .meta b { color: var(--muted); font-weight: 500; }
+
+  /* screenshot */
+  .shot { margin: 56px auto 0; border-radius: 16px; overflow: hidden; border: 1px solid var(--border-hi);
+          box-shadow: 0 40px 120px -40px rgba(0,0,0,.9), 0 0 0 6px rgba(255,255,255,.02); }
+  .shot img { display: block; width: 100%; height: auto; }
+
+  section { padding: 84px 0 0; }
+  h2 { font-size: clamp(28px, 4vw, 40px); letter-spacing: -.025em; line-height: 1.1; margin: 0 0 12px; }
+  .sub { color: var(--muted); margin: 0 0 36px; max-width: 40em; }
+
+  /* steps */
+  .steps { display: grid; gap: 16px; grid-template-columns: 1fr; counter-reset: s; }
+  @media (min-width: 820px) { .steps { grid-template-columns: repeat(3, 1fr); } }
+  .step { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 26px; }
+  .step::before {
+    counter-increment: s; content: counter(s);
+    display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; margin-bottom: 16px;
+    background: var(--accent); color: var(--on-accent); font-weight: 800;
+  }
+  .step h3 { margin: 0 0 6px; font-size: 19px; }
+  .step p { margin: 0; color: var(--muted); font-size: 15.5px; }
+
+  /* windows warning helper */
+  .warn { display: grid; gap: 28px; align-items: center; background: var(--panel); border: 1px solid var(--border);
+          border-radius: 18px; padding: 28px; }
+  @media (min-width: 880px) { .warn { grid-template-columns: 1.1fr 1fr; padding: 40px; } }
+  .warn h2 { font-size: clamp(24px, 3vw, 32px); }
+  .warn p { color: var(--muted); margin: 0 0 12px; }
+  .warn ol { margin: 0; padding-left: 20px; color: var(--muted); }
+  .warn li { margin: 6px 0; }
+  .warn li b { color: var(--text); }
+  .mock { background: #1f4d8f; color: #fff; border-radius: 10px; padding: 24px 24px 18px; font-family: "Segoe UI", system-ui, sans-serif;
+          box-shadow: 0 20px 60px -20px rgba(0,0,0,.8); position: relative; }
+  .mock .t { font-size: 22px; font-weight: 300; margin-bottom: 10px; }
+  .mock .d { font-size: 13px; opacity: .9; line-height: 1.5; }
+  .mock .more { display: inline-block; margin-top: 10px; font-size: 13px; text-decoration: underline;
+                outline: 3px solid var(--accent); outline-offset: 4px; border-radius: 2px; }
+  .mock .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
+  .mock .b { font-size: 13px; padding: 6px 18px; border: 1px solid rgba(255,255,255,.55); }
+  .mock .b.run { outline: 3px solid var(--accent); outline-offset: 3px; }
+  .mock .note { position: absolute; top: -12px; right: 14px; background: var(--accent); color: var(--on-accent);
+                font: 700 12px "Geist", sans-serif; padding: 4px 10px; border-radius: 99px; }
+
+  /* features */
+  .grid { display: grid; gap: 14px; grid-template-columns: 1fr; }
+  @media (min-width: 640px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (min-width: 980px) { .grid { grid-template-columns: repeat(3, 1fr); } }
+  .feat { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px; }
+  .feat .ic { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center;
+              background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent); margin-bottom: 14px; }
+  .feat .ic svg { width: 20px; height: 20px; }
+  .feat h3 { margin: 0 0 6px; font-size: 17px; }
+  .feat p { margin: 0; color: var(--muted); font-size: 15px; }
+
+  .two { display: grid; gap: 28px; align-items: center; }
+  @media (min-width: 900px) { .two { grid-template-columns: 1fr 1.25fr; } }
+  .two .shot { margin: 0; }
+
+  /* faq */
+  details { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 0 22px; margin-bottom: 10px; }
+  summary { cursor: pointer; padding: 18px 0; font-weight: 600; list-style: none; display: flex; justify-content: space-between; gap: 16px; }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: "+"; color: var(--accent); font-weight: 700; font-size: 20px; line-height: 1; }
+  details[open] summary::after { content: "–"; }
+  details p { color: var(--muted); margin: 0 0 18px; }
+
+  .final { text-align: center; padding: 96px 0 40px; }
+  footer { border-top: 1px solid var(--border); margin-top: 64px; padding: 28px 0 40px; color: var(--faint); font-size: 14px;
+           display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; }
+  footer a { color: var(--muted); }
+  code { font: 500 .9em "Geist Mono", ui-monospace, monospace; background: var(--surface); padding: 2px 6px; border-radius: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="brand" href="#"><img src="img/logo.png" alt="">ClipDrop</a>
+    <a class="navlink" href="https://github.com/gilby95/ClipDrop">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.28-1.68-1.28-1.68-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.4-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
+      Source
+    </a>
+  </nav>
+
+  <header class="hero">
+    <span class="eyebrow">● Free for Windows 10 &amp; 11</span>
+    <h1>Your clips, <em>sized right</em> for Discord.</h1>
+    <p class="lede">ClipDrop finds the clips from OBS, ShadowPlay, Medal and the rest, lets you trim them, shrinks them under Discord's limit, and posts them to the server in one click.</p>
+    <div class="cta">
+      <a class="btn dl" href="https://github.com/gilby95/ClipDrop/releases/latest/download/ClipDrop-Setup.exe">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m6 10 6 6 6-6"/><path d="M4 20h16"/></svg>
+        Download ClipDrop
+      </a>
+      <span class="meta" id="meta">Windows installer · <b>about 92 MB</b> · updates itself</span>
+    </div>
+    <div class="shot"><img src="img/shot-main.png" alt="ClipDrop: clip list grouped by day, video preview, trim timeline and the 'Fit under 20 MB' compress card" width="1440" height="880"></div>
+  </header>
+
+  <section id="how">
+    <h2>Install once. Then it's 3 clicks.</h2>
+    <p class="sub">No accounts, no uploading to some website. Everything happens on your PC until you hit Share.</p>
+    <div class="steps">
+      <div class="step"><h3>Install it</h3><p>Run <b>ClipDrop-Setup.exe</b>. It adds a desktop icon and finds where your capture app saves clips on its own.</p></div>
+      <div class="step"><h3>Trim it</h3><p>New clips pop up at the top. Pick one and drag the green handles around the good part.</p></div>
+      <div class="step"><h3>Drop it</h3><p>Hit <b>Compress for Discord</b>, then <b>Share to Discord</b>, or just drag the clip into any chat.</p></div>
+    </div>
+  </section>
+
+  <section id="warning">
+    <div class="warn">
+      <div>
+        <h2>"Windows protected your PC"?</h2>
+        <p>That's normal. Windows shows it for any app that isn't from a big company with a paid signing certificate.</p>
+        <ol>
+          <li>Click <b>More info</b></li>
+          <li>Click <b>Run anyway</b></li>
+        </ol>
+        <p style="margin-top:14px">You only see this once, when you install.</p>
+      </div>
+      <div class="mock" aria-hidden="true">
+        <span class="note">click these two</span>
+        <div class="t">Windows protected your PC</div>
+        <div class="d">Microsoft Defender SmartScreen prevented an unrecognized app from starting. Running this app might put your PC at risk.</div>
+        <span class="more">More info</span>
+        <div class="row"><span class="b run">Run anyway</span><span class="b">Don't run</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="features">
+    <h2>Everything you need, nothing you don't.</h2>
+    <p class="sub">Made for a group of friends who all record differently.</p>
+    <div class="grid">
+      <div class="feat"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg></div>
+        <h3>Any capture app</h3><p>OBS, NVIDIA ShadowPlay, Medal, AMD ReLive, Xbox Game Bar, Outplayed. Watch as many folders as you like.</p></div>
+      <div class="feat"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="m14 10 7-7"/><path d="m3 21 7-7"/></svg></div>
+        <h3>Always fits</h3><p>Pick 20 MB (free), 50 MB, 500 MB (Nitro) or your own size. It shows how it'll look before you compress, and remembers your pick.</p></div>
+      <div class="feat"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></div>
+        <h3>Share in one click</h3><p>Post straight to the server's clips channel with a message, or drag the file into any chat. Ctrl+V works too.</p></div>
+      <div class="feat"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88"/><path d="M14.47 14.48 20 20"/><path d="M8.12 8.12 12 12"/></svg></div>
+        <h3>Quick trims</h3><p>Drag the handles, or press <code>I</code> and <code>O</code>. Space to play, arrow keys to skip, scroll to zoom in on long recordings.</p></div>
+      <div class="feat"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2M9 2v2M15 20v2M9 20v2M2 15h2M2 9h2M20 15h2M20 9h2"/></svg></div>
+        <h3>Works on any PC</h3><p>Uses your NVIDIA, AMD or Intel GPU to compress fast, and falls back to the CPU if there isn't one.</p></div>
+      <div class="feat"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></div>
+        <h3>Updates itself</h3><p>When there's a new version, an Update button shows up. One click and it reopens with the new stuff.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="two">
+      <div>
+        <h2>Then just drag it in.</h2>
+        <p class="sub" style="margin-bottom:0">When it's done, the clip is already on your clipboard. Click Discord's message box and press <code>Ctrl</code>+<code>V</code>, drag the card into a chat, or hit <b>Share to Discord</b>.</p>
+      </div>
+      <div class="shot"><img src="img/shot-ready.png" alt="Finished clip: a 'Drag me into Discord' card with Share to Discord, Copy and Show file buttons" width="1440" height="880" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section id="faq">
+    <h2>Questions</h2>
+    <details><summary>Is it safe?</summary><p>Yes. It's open source, so anyone can read the code on GitHub. The Windows warning only means the app isn't paid-signed, not that anything is wrong with it.</p></details>
+    <details><summary>Does it upload my clips anywhere?</summary><p>No. Your clips stay on your PC. The only time anything leaves is when you press <b>Share to Discord</b>, and then it goes straight to the server's channel.</p></details>
+    <details><summary>Does it mess with my original recordings?</summary><p>Never. It makes a new, smaller copy (in <code>Videos\ClipDrop</code>) and leaves the original alone.</p></details>
+    <details><summary>I have Nitro. Can I post bigger clips?</summary><p>Yes. Pick <b>Nitro Basic, 50 MB</b> or <b>Nitro, 500 MB</b> under "Fit under" and it keeps more quality. Posts made with Share to Discord follow the server's limit instead.</p></details>
+    <details><summary>How do I uninstall it?</summary><p>Windows Settings → Apps → ClipDrop → Uninstall, like any other program.</p></details>
+  </section>
+
+  <div class="final">
+    <h2>Grab it, then go clip something.</h2>
+    <p class="sub" style="margin:0 auto 28px">Takes about a minute to install.</p>
+    <a class="btn dl" href="https://github.com/gilby95/ClipDrop/releases/latest/download/ClipDrop-Setup.exe">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m6 10 6 6 6-6"/><path d="M4 20h16"/></svg>
+      Download ClipDrop
+    </a>
+  </div>
+
+  <footer>
+    <span>ClipDrop <span id="ver"></span> · made for the crew</span>
+    <span><a href="https://github.com/gilby95/ClipDrop/releases">All versions</a> · <a href="https://github.com/gilby95/ClipDrop">Source on GitHub</a></span>
+  </footer>
+</div>
+<script>
+  // Show the current version and size from the latest GitHub release (keeps working if this fails).
+  fetch("https://api.github.com/repos/gilby95/ClipDrop/releases/latest")
+    .then(r => r.ok ? r.json() : Promise.reject())
+    .then(rel => {
+      const v = (rel.tag_name || "").replace(/^v/i, "");
+      const a = (rel.assets || []).find(x => x.name === "ClipDrop-Setup.exe");
+      if (!v) return;
+      const mb = a ? Math.round(a.size / 1e6) : null;
+      document.getElementById("meta").innerHTML =
+        `Version <b>${v}</b> · Windows installer${mb ? ` · <b>${mb} MB</b>` : ""} · updates itself`;
+      document.getElementById("ver").textContent = v;
+    })
+    .catch(() => {});
+</script>
+</body>
+</html>

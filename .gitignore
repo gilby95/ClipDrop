@@ -8,3 +8,4 @@ bin/
 release/
 share_channels.json
 ClipDrop-Setup.exe
+.claude/
