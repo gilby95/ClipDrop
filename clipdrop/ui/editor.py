@@ -20,7 +20,9 @@ from .timeline import Timeline
 
 RESOLUTIONS = [("Auto", "auto"), ("Original", "source"), ("1440p", "1440"), ("1080p", "1080"),
                ("720p", "720"), ("480p", "480")]
-FRAME_RATES = [("Auto", "auto"), ("Original", "source"), ("60 fps", "60"), ("30 fps", "30")]
+FRAME_RATES = [("Auto", "auto"), ("60 fps", "60"), ("30 fps", "30"), ("Original", "source")]
+FPS_TIPS = ("Auto picks the sharpest result: 60 fps when there's room, otherwise 30 fps.\n"
+            "60 fps = smoothest motion, but blurrier when the clip is long.\n30 fps = sharpest picture.")
 SHORTCUTS = [("Play / pause", "Space"), ("Set start / end", "I  O  or  [  ]"), ("Jump 1 s (Shift: 5 s)", "←  →"),
              ("One frame", ",  ."), ("Zoom timeline", "Wheel"), ("Reset zoom", "Double-click"),
              ("Compress", "Ctrl+Enter")]
@@ -460,6 +462,7 @@ class EditorPane(QWidget):
                 self.res_combo = combo
             else:
                 self.fps_combo = combo
+                combo.setToolTip(FPS_TIPS)
         row.addWidget(self.adv, 0, Qt.AlignBottom)
         self.adv_btn = _button("", "Flat")
         self.adv_btn.setLayoutDirection(Qt.RightToLeft)
@@ -493,6 +496,21 @@ class EditorPane(QWidget):
         plan.addWidget(self.plan_label)
         self.plan_detail = _label("", "Mono")
         plan.addWidget(self.plan_detail)
+        self.low_res = QFrame()
+        self.low_res.setStyleSheet(f"QFrame {{ background: #2b2312; border: 1px solid #5a4418; border-radius: 8px; }}"
+                                   f"QLabel {{ border: none; background: transparent; color: {theme.WARN}; }}")
+        lr = QHBoxLayout(self.low_res)
+        lr.setContentsMargins(12, 8, 8, 8)
+        lr.setSpacing(10)
+        self.low_res_label = _label("", wrap=True)
+        lr.addWidget(self.low_res_label, 1)
+        self.shorten_btn = _button("", tip="Keeps the start where it is and moves the end in")
+        self.shorten_btn.setFocusPolicy(Qt.NoFocus)
+        self.shorten_btn.clicked.connect(self._shorten_to_720)
+        lr.addWidget(self.shorten_btn, 0, Qt.AlignVCenter)
+        self.low_res.hide()
+        self._shorten_ms = 0
+        plan.addWidget(self.low_res)
         meter = QHBoxLayout()
         meter.setSpacing(10)
         self.meter = QProgressBar()
@@ -806,6 +824,7 @@ class EditorPane(QWidget):
         c = self.clip
         self.plan_detail.setText("")
         self.plan_detail.hide()
+        self.low_res.hide()
         if hasattr(self, "adv_btn") and not self._advanced:
             self._sync_advanced()
         if not c or not c.info:
@@ -843,7 +862,33 @@ class EditorPane(QWidget):
                         f"about <b>{est:.1f} MB</b>", meter=(est, limit))
         self.plan_detail.setText(f"{plan.video_kbps / 1000:.1f} Mbps video · {plan.audio_kbps} kbps audio")
         self.plan_detail.setVisible(self._advanced)
+        self._sync_low_res(plan, end - start, limit)
         self.go_btn.setEnabled(self._cancel is None)
+
+    def _sync_low_res(self, plan, length, limit):
+        """Warns when the clip is too long to stay at 720p, and offers to shorten it."""
+        info = self.clip.info
+        if (self.settings["resolution"] != "auto" or plan.height >= 720 or (info.get("height") or 0) < 720):
+            self.low_res.hide()
+            return
+        max_s = compress.max_seconds_at(info, limit, 720, self.settings["fps"], info["audio_tracks"] > 0)
+        self._shorten_ms = int(max_s * 1000) - 100
+        if self._shorten_ms < 1000:
+            self.low_res.hide()
+            return
+        blurry = "will look pretty blurry" if plan.height <= 480 else "will look a bit soft"
+        self.low_res_label.setText(f"At this length it drops to <b>{plan.height}p</b> and {blurry}. "
+                                   f"Keep it under <b>{fmt_time(max_s, 0)}</b> to stay at 720p.")
+        self.shorten_btn.setText(f"Shorten to {fmt_time(self._shorten_ms / 1000, 0)}")
+        self.low_res.show()
+
+    def _shorten_to_720(self):
+        if not self.clip or self._shorten_ms <= 0:
+            return
+        self.b = min(self.timeline.dur, self.a + self._shorten_ms)
+        self._range_changed()
+        if self.player.position() > self.b:
+            self.player.setPosition(self.a)
 
     # Exporting ----------------------------------------------------------------
 

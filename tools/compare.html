@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quality Compare</title>
+<style>
+  :root { --bg:#0e0f11; --panel:#15171a; --surface:#1d2024; --border:#2a2e34; --text:#eceef1; --muted:#a1a7b0; --accent:#b6f23d; --on:#10140a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 "Segoe UI", system-ui, sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:10px 16px; align-items:center; padding:12px 16px; background:var(--panel); border-bottom:1px solid var(--border); }
+  h1 { font-size:16px; margin:0 8px 0 0; }
+  label { color:var(--muted); display:flex; gap:6px; align-items:center; }
+  select, button { background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:6px 10px; font:inherit; }
+  button.primary { background:var(--accent); color:var(--on); border:none; font-weight:600; }
+  #stage { position:relative; margin:16px auto; max-width:min(96vw, 1600px); aspect-ratio:16/9; background:#000; overflow:hidden; cursor:ew-resize; border-radius:8px; }
+  #stage video { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; transform-origin:var(--ox,50%) var(--oy,50%); }
+  #stage.zoom video { transform:scale(2); }
+  #right { clip-path: inset(0 0 0 var(--split, 50%)); }
+  #line { position:absolute; top:0; bottom:0; left:var(--split,50%); width:2px; background:var(--accent); pointer-events:none; }
+  .tag { position:absolute; top:10px; padding:4px 10px; border-radius:6px; background:rgba(0,0,0,.7); font-weight:600; pointer-events:none; }
+  #tagL { left:10px; } #tagR { right:10px; }
+  .help { color:var(--muted); text-align:center; padding:0 16px 8px; }
+  table { margin:8px auto 24px; border-collapse:collapse; }
+  td, th { padding:6px 14px; border-bottom:1px solid var(--border); text-align:left; }
+  th { color:var(--muted); font-weight:500; }
+  tr.best td { color:var(--accent); }
+  input[type=range] { width:220px; accent-color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Quality compare</h1>
+  <label>Clip <select id="clip"></select></label>
+  <label>Left <select id="a"></select></label>
+  <label>Right <select id="b"></select></label>
+  <button class="primary" id="play">Play / pause</button>
+  <label><input type="checkbox" id="zoom"> Zoom 2× (moves with mouse)</label>
+  <label>Time <input type="range" id="seek" min="0" max="1000" value="0"></label>
+</header>
+<div id="stage">
+  <video id="left" muted playsinline preload="auto"></video>
+  <video id="right" muted playsinline preload="auto"></video>
+  <div id="line"></div>
+  <div class="tag" id="tagL"></div><div class="tag" id="tagR"></div>
+</div>
+<p class="help">Move the mouse over the video to wipe between left and right. Pause on fast action and zoom in: that's where blockiness shows.</p>
+<table id="scores"></table>
+<script>
+  // Serve the ClipDrop folder (quality-lab/<clip>/*.mp4 + results.json) and open tools/compare.html.
+  const clips = ["Rubber Bandits", "REPO"];
+  const $ = id => document.getElementById(id);
+  const L = $("left"), R = $("right"), stage = $("stage");
+  let results = [];
+  clips.forEach(c => $("clip").add(new Option(c, c)));
+
+  async function loadClip() {
+    const c = $("clip").value;
+    try { results = await (await fetch(`../quality-lab/${encodeURIComponent(c)}/results.json`)).json(); }
+    catch { results = []; }
+    const names = ["00-reference.mkv", ...results.map(r => r.variant + ".mp4")];
+    for (const s of [$("a"), $("b")]) { s.innerHTML = ""; names.forEach(n => s.add(new Option(label(n), n))); }
+    const best = [...results].sort((x, y) => y.vmaf - x.vmaf)[0];
+    $("a").value = "01-today-fast-gpu.mp4";
+    $("b").value = best ? best.variant + ".mp4" : names[0];
+    const bestV = best && best.variant;
+    $("scores").innerHTML = "<tr><th>Variant</th><th>Res</th><th>Size</th><th>Encode</th><th>VMAF</th><th>Worst 5%</th></tr>" +
+      [...results].sort((x, y) => y.vmaf - x.vmaf).map(r =>
+        `<tr class="${r.variant === bestV ? "best" : ""}"><td>${r.variant}</td><td>${r.res}</td><td>${r.mb} MB</td><td>${r.encode_s}s</td><td>${r.vmaf}</td><td>${r.vmaf_worst5}</td></tr>`).join("");
+    setSources();
+  }
+  function label(n) {
+    const r = results.find(r => r.variant + ".mp4" === n);
+    return r ? `${n.replace(".mp4", "")} · VMAF ${r.vmaf}` : "reference (original)";
+  }
+  function setSources() {
+    const c = encodeURIComponent($("clip").value), t = L.currentTime || 0;
+    L.src = `../quality-lab/${c}/${encodeURIComponent($("a").value)}`;
+    R.src = `../quality-lab/${c}/${encodeURIComponent($("b").value)}`;
+    $("tagL").textContent = $("a").selectedOptions[0]?.text || "";
+    $("tagR").textContent = $("b").selectedOptions[0]?.text || "";
+    L.currentTime = R.currentTime = t;
+  }
+  $("clip").onchange = loadClip;
+  $("a").onchange = $("b").onchange = setSources;
+  $("play").onclick = () => { if (L.paused) { R.currentTime = L.currentTime; L.play(); R.play(); } else { L.pause(); R.pause(); R.currentTime = L.currentTime; } };
+  $("zoom").onchange = e => stage.classList.toggle("zoom", e.target.checked);
+  $("seek").oninput = e => { const t = (L.duration || 0) * e.target.value / 1000; L.currentTime = R.currentTime = t; };
+  L.ontimeupdate = () => { if (L.duration) $("seek").value = 1000 * L.currentTime / L.duration;
+                           if (!L.paused && Math.abs(R.currentTime - L.currentTime) > 0.08) R.currentTime = L.currentTime; };
+  L.onended = () => { L.currentTime = R.currentTime = 0; L.play(); R.play(); };
+  stage.onmousemove = e => {
+    const b = stage.getBoundingClientRect(), x = (e.clientX - b.left) / b.width, y = (e.clientY - b.top) / b.height;
+    stage.style.setProperty("--split", (x * 100) + "%");
+    if (stage.classList.contains("zoom")) { stage.style.setProperty("--ox", x * 100 + "%"); stage.style.setProperty("--oy", y * 100 + "%"); }
+  };
+  document.onkeydown = e => { if (e.code === "Space") { e.preventDefault(); $("play").click(); } };
+  loadClip();
+</script>
+</body>
+</html>

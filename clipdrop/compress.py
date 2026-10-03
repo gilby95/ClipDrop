@@ -14,10 +14,15 @@ from dataclasses import dataclass
 
 from .media import NO_WINDOW, gpu_encoder, tool
 
-SAFETY = 0.94          # leave room for the MP4 container and encoder wobble
-BPP_MIN = 0.045        # bits per pixel below which gameplay turns to mush
+SAFETY = 0.97          # leave room for the MP4 container; overshoots are re-encoded
 MIN_VIDEO_KBPS = 150
 LADDER = [1440, 1080, 720, 540, 480, 360]
+
+# Minimum bits per pixel for each choice, from the quality lab (tools/quality_lab.py) at 20 MB:
+# 30 fps beat 60 fps by 3-7 VMAF points at the same size, so 60 fps is only kept with plenty of room.
+BPP_60 = 0.085         # full-resolution 60 fps
+BPP_30 = {1440: 0.09, 1080: 0.09, 720: 0.08, 540: 0.06, 480: 0.05}
+BPP_FIXED_FPS = 0.045  # when the frame rate is chosen by hand, only resolution adapts
 
 
 class Cancelled(Exception):
@@ -54,8 +59,8 @@ def make_plan(info, duration, limit_mb, resolution="auto", fps_pref="auto", has_
         raise ValueError("The selection is empty.")
     total = limit_mb * 8000 * SAFETY / duration           # kbps for video + audio
     audio = 0
-    if has_audio:
-        audio = 160 if total > 4000 else 128 if total > 1500 else 96 if total > 600 else 64
+    if has_audio:   # game audio sounds fine at 96k; give the video the bits when space is tight
+        audio = 160 if total > 15000 else 128 if total > 8000 else 96 if total > 600 else 64
     video = total - audio
     if video < MIN_VIDEO_KBPS:
         raise TooLong(limit_mb * 8000 * SAFETY / (MIN_VIDEO_KBPS + (64 if has_audio else 0)))
@@ -68,31 +73,33 @@ def make_plan(info, duration, limit_mb, resolution="auto", fps_pref="auto", has_
         heights = [sh]
     elif resolution != "auto":
         heights = [min(int(resolution), sh)]
-    fps_opts = [src_fps] + ([30] if src_fps > 31 else [])
-    if fps_pref == "source":
-        fps_opts = [src_fps]
-    elif fps_pref != "auto":
-        fps_opts = [min(float(fps_pref), src_fps)]
+    low_fps = 30 if src_fps > 31 else src_fps
 
-    # Keep 60 fps down to 720p (smooth gameplay reads better than extra pixels),
-    # then drop to 30 fps, and only then go below 720p.
-    order = [(h, fps_opts[0]) for h in heights if h >= 720 or len(fps_opts) == 1]
-    order += [(h, f) for f in fps_opts[1:] for h in heights]
-    order += [(h, fps_opts[0]) for h in heights if (h, fps_opts[0]) not in order]
+    def bpp30(h):
+        return BPP_30.get(h, 0.09 if h > 1080 else 0.0)
+
+    # (height, fps, minimum bits per pixel), best first; the last one is the fallback.
+    if fps_pref in ("source", "60") or (fps_pref != "auto" and float(fps_pref) > 31):
+        f = src_fps if fps_pref == "source" else min(float(fps_pref), src_fps)
+        order = [(h, f, BPP_FIXED_FPS) for h in heights]
+    elif fps_pref == "30" or src_fps <= 31:
+        order = [(h, low_fps, bpp30(h)) for h in heights]
+    else:   # auto: full-res 60 fps when there's room, otherwise the sharper 30 fps
+        order = [(heights[0], src_fps, BPP_60)] + [(h, low_fps, bpp30(h)) for h in heights]
 
     def width_for(h):
         return max(2, int(round(sw * h / sh / 2)) * 2)
 
-    pick = order[-1]
-    for h, f in order:
-        if video * 1000 / (width_for(h) * h * f) >= BPP_MIN:
+    pick = order[-1][:2]
+    for h, f, need in order:
+        if video * 1000 / (width_for(h) * h * f) >= need:
             pick = (h, f)
             break
     h, f = pick
     w = width_for(h)
 
     # Big limits (Nitro): don't waste space past what looks good / what the source has.
-    cap = w * h * f * 0.12 / 1000
+    cap = w * h * f * (0.2 if f <= 31 else 0.12) / 1000
     src_kbps = (info.get("bitrate") or 0) / 1000
     if src_kbps > 0:
         cap = min(cap, max(src_kbps, 1500))
@@ -100,6 +107,30 @@ def make_plan(info, duration, limit_mb, resolution="auto", fps_pref="auto", has_
 
     return Plan(width=w, height=h, fps=f, video_kbps=int(video), audio_kbps=audio, duration=duration,
                 scaled=(h != sh), fps_changed=abs(f - (info.get("fps") or f)) > 0.5)
+
+
+def max_seconds_at(info, limit_mb, min_height=720, fps_pref="auto", has_audio=True):
+    """Longest clip that still comes out at min_height or better (auto resolution), in seconds."""
+    target = min(min_height, info.get("height") or min_height)
+
+    def ok(d):
+        try:
+            return make_plan(info, d, limit_mb, "auto", fps_pref, has_audio).height >= target
+        except (TooLong, ValueError):
+            return False
+
+    lo, hi = 0.5, 4 * 3600.0
+    if not ok(lo):
+        return 0.0
+    if ok(hi):
+        return hi
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        if ok(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
 
 
 def shareable_as_is(path, info, start, end, limit_mb) -> bool:
@@ -134,8 +165,14 @@ def _graph(plan, n_audio, mix, pix_fmt, with_audio=True):
     return ["-filter_complex", ";".join(parts), *maps]
 
 
-def _gpu_args(kind, v):
+def _gpu_args(kind, v, tuned=True):
     rate = ["-b:v", f"{v}k", "-maxrate", f"{int(v * 1.5)}k", "-bufsize", f"{int(v * 2)}k"]
+    if kind == "nvenc" and tuned:
+        # Quality-lab winner for NVIDIA: much better on dark / grainy games at the same size and speed.
+        # b_ref_mode needs an RTX (Turing+) card; older cards fall back to the plain settings below.
+        return ["-c:v", "h264_nvenc", "-preset", "p7", "-tune", "hq", "-rc", "vbr", "-multipass", "fullres",
+                "-rc-lookahead", "32", "-spatial-aq", "1", "-temporal-aq", "1", "-aq-strength", "8",
+                "-bf", "3", "-b_ref_mode", "middle", "-profile:v", "high", *rate]
     if kind == "nvenc":
         return ["-c:v", "h264_nvenc", "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-multipass", "fullres",
                 "-spatial-aq", "1", "-profile:v", "high", *rate]
@@ -199,16 +236,23 @@ def compress(src, out, start, end, info, limit_mb, *, resolution="auto", fps_pre
     gpu = gpu_encoder() if encoder == "fast" else None
     try:
         if gpu:
-            v = int(v * 0.96)        # hardware encoders overshoot a little more than x264
-            for attempt in range(3):
+            v = int(v * 0.98)        # hardware encoders overshoot a little more than x264
+            tuned = True
+            attempt = 0
+            while attempt < 3:
                 label = "Compressing on GPU" + (" (retry)" if attempt else "")
                 pix = "nv12" if gpu == "qsv" else "yuv420p"
                 try:
-                    _run([*head, *_graph(plan, n_audio, mix_audio, pix), *_gpu_args(gpu, v), *audio_args,
+                    _run([*head, *_graph(plan, n_audio, mix_audio, pix), *_gpu_args(gpu, v, tuned), *audio_args,
                           "-movflags", "+faststart", *tail, tmp], duration, on_progress, cancel, 0, 1, label)
                 except RuntimeError as e:
+                    if gpu == "nvenc" and tuned:
+                        log(f"Tuned NVIDIA settings not supported here, using basic ones: {e}")
+                        tuned = False
+                        continue
                     log(f"GPU encoder failed, using CPU instead: {e}")
                     break
+                attempt += 1
                 size = os.path.getsize(tmp)
                 if size <= limit_bytes:
                     return finish(gpu)
@@ -219,7 +263,8 @@ def compress(src, out, start, end, info, limit_mb, *, resolution="auto", fps_pre
         passlog = os.path.join(passlog_dir, "pass")
         try:
             for attempt in range(3):
-                x264 = ["-c:v", "libx264", "-preset", "medium", "-profile:v", "high", "-b:v", f"{v}k",
+                x264 = ["-c:v", "libx264", "-preset", "slow" if duration <= 90 else "medium", "-profile:v", "high",
+                        "-b:v", f"{v}k",
                         "-passlogfile", passlog]
                 note = " (retry)" if attempt else ""
                 _run([*head, *_graph(plan, n_audio, mix_audio, "yuv420p", with_audio=False), *x264,
