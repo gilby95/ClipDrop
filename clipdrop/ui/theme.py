@@ -63,6 +63,10 @@ ICONS = {
     "reset": (_STROKE, '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>'),
     "search": (_STROKE, '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>'),
     "plus": (_STROKE, '<path d="M12 5v14"/><path d="M5 12h14"/>'),
+    "trash": (_STROKE, '<path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/>'
+                       '<path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V4h6v3"/>'),
+    "storage": (_STROKE, '<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/>'
+                         '<path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>'),
     "check": (_STROKE, '<path d="m5 12.5 4.5 4.5L19 7.5"/>'),
     "close": (_STROKE, '<path d="M6 6l12 12"/><path d="M18 6 6 18"/>'),
     "alert": (_STROKE, '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5"/><path d="M12 16.5v.01"/>'),

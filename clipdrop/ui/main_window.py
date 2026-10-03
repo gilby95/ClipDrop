@@ -11,12 +11,15 @@ from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QComboBox, Q
                                QVBoxLayout, QWidget)
 
 from ..library import Library, norm
+from .. import storage
+from ..media import fmt_size
 from ..settings import Settings
 from . import theme
 from .cliplist import ClipDelegate, ClipModel, ClipRole
 from .dialogs import FindFoldersDialog, OnboardingDialog, SettingsDialog
 from .editor import EditorPane, copy_file_to_clipboard, gpu_note, show_in_folder
 from .theme import app_icon
+from .storage_dialog import StorageDialog
 from .update_dialog import UpdateChecker, UpdateDialog
 
 SORTS = [("Newest first", "newest"), ("Oldest first", "oldest"), ("Name", "name"), ("Biggest", "size")]
@@ -124,6 +127,7 @@ class MainWindow(QMainWindow):
         self.editor = EditorPane(self.settings)
         self.editor.status.connect(lambda s: self.statusBar().showMessage(s, 8000))
         self.editor.exported.connect(self.model.clip_changed)
+        self.editor.exported.connect(lambda _src: self._refresh_storage())
         self.editor.wantChannels.connect(self._need_channels)
         self.editor.jobProgress.connect(self._on_job_progress)
         split.addWidget(self.editor)
@@ -162,6 +166,9 @@ class MainWindow(QMainWindow):
         self.updater = UpdateChecker(self)
         self.updater.found.connect(self._on_update_found)
         QTimer.singleShot(3000, self.updater.check)
+        self._refresh_storage()
+        self._storage_timer = QTimer(self, interval=15000, timeout=self._refresh_storage)
+        self._storage_timer.start()
         self._update_timer = QTimer(self, interval=6 * 3600 * 1000, timeout=self.updater.check)
         self._update_timer.start()
 
@@ -232,6 +239,19 @@ class MainWindow(QMainWindow):
         find.clicked.connect(self.find_folders)
         lay.addWidget(add)
         lay.addWidget(find)
+        srow = QHBoxLayout()
+        srow.setContentsMargins(0, 0, 6, 0)
+        self.storage_btn = QPushButton(" Compressed clips")
+        self.storage_btn.setObjectName("SideNav")
+        self.storage_btn.setIcon(theme.icon("storage", theme.TEXT_2))
+        self.storage_btn.setToolTip("See, open and clean out the smaller copies ClipDrop made")
+        self.storage_btn.clicked.connect(self.open_storage)
+        srow.addWidget(self.storage_btn, 1)
+        self.storage_size = QLabel("")
+        self.storage_size.setObjectName("Mono")
+        self.storage_size.setStyleSheet(f"color: {theme.FAINT}; font-size: 11px;")
+        srow.addWidget(self.storage_size)
+        lay.addLayout(srow)
         line = QFrame()
         line.setObjectName("Hairline")
         lay.addSpacing(4)
@@ -249,7 +269,7 @@ class MainWindow(QMainWindow):
         ver.setStyleSheet(f"color: {theme.FAINT}; font-size: 11px;")
         row.addWidget(ver)
         lay.addLayout(row)
-        for b in (add, find, settings):
+        for b in (add, find, settings, self.storage_btn):
             b.setFocusPolicy(Qt.NoFocus)
             b.setIconSize(theme.ICON_SIZE)
             b.setMinimumHeight(34)
@@ -501,6 +521,34 @@ class MainWindow(QMainWindow):
     def _on_sort(self):
         self.settings["sort"] = self.sort.currentData()
         self._reload_list()
+
+    def _refresh_storage(self):
+        total, n = storage.usage(self.settings["export_dir"])
+        self.storage_size.setText(fmt_size(total) if n else "")
+        self.storage_btn.setToolTip(f"{n} compressed clip{'s' if n != 1 else ''} in {self.settings['export_dir']}"
+                                    "\nClick to open, delete or empty them")
+
+    def open_storage(self):
+        dlg = StorageDialog(self.settings, busy=self.editor.busy(), parent=self)
+        dlg.changed.connect(self._after_storage_change)
+        dlg.exec()
+        self._after_storage_change()
+
+    def _after_storage_change(self):
+        # forget compressed copies that are gone, so the green "ready" badges and card go away
+        gone = [src for src, e in list(self.settings.data["exports"].items())
+                if e.get("path") != src and not os.path.exists(e.get("path", ""))]
+        for src in gone:
+            self.settings.data["exports"].pop(src, None)
+        if gone:
+            self.settings.save()
+        for src in gone:
+            self.model.clip_changed(src)
+        ed = self.editor
+        if ed.export_stack.currentIndex() == 2 and ed.drop.path and not os.path.exists(ed.drop.path):
+            ed.export_stack.setCurrentIndex(0)
+        self._refresh_storage()
+        self.library.rescan()
 
     def _on_library_changed(self):
         self._reload_list()
